@@ -67,6 +67,14 @@ export const ScreeningStateSchema = z.object({
 });
 export type ScreeningState = z.infer<typeof ScreeningStateSchema>;
 
+export const AgentContextSnapshotSchema = z.object({
+  lastService: z.string().optional(),
+  lastBranch: z.string().optional(),
+  lastBookingRef: z.string().optional(),
+  recentTopics: z.array(z.string()).optional(),
+});
+export type AgentContextSnapshot = z.infer<typeof AgentContextSnapshotSchema>;
+
 export const SessionContext = z.object({
   sessionId: z.string().uuid(),
   channel: Channel,
@@ -76,6 +84,7 @@ export const SessionContext = z.object({
   conversationHistory: z.array(ConversationTurn),
   lastIntent: IntentId.nullable(),
   lastBookingRef: z.string().nullable(),
+  agentContext: AgentContextSnapshotSchema.optional(),
   status: z.enum(['active', 'escalated', 'closed']),
   screeningState: ScreeningStateSchema.optional(),
   clarificationCount: z.number().int().min(0).default(0),
@@ -198,12 +207,6 @@ export const WhatsAppWebhookBody = z.object({
   MessageSid: z.string(),
 });
 export type WhatsAppWebhookBody = z.infer<typeof WhatsAppWebhookBody>;
-
-export interface AgentPipelineResult {
-  response: string;
-  sessionId: string;
-  quickReplies?: string[];
-}
 
 export interface ServiceLookupResult {
   service: Service | null;

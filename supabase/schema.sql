@@ -210,6 +210,7 @@ CREATE TABLE sessions (
   screening_state jsonb,
   last_intent text,
   last_booking_ref text,
+  agent_context jsonb,
   status text DEFAULT 'active'
     CHECK (status IN ('active','escalated','closed')),
   created_at timestamptz DEFAULT now(),

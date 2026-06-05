@@ -1,24 +1,30 @@
+import { AIMessage } from '@langchain/core/messages';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { toIsoDate } from '../src/lib/dates';
 
 const {
   appendTurnMock,
-  createChatCompletionMock,
+  createAgentLlmMock,
   getOrCreateSessionMock,
+  invokeMock,
+  isAgentLlmEnabledMock,
   lookupFaqMock,
   resolveUserIdentityMock,
   updateSessionMock,
 } = vi.hoisted(() => ({
   appendTurnMock: vi.fn(),
-  createChatCompletionMock: vi.fn(),
+  createAgentLlmMock: vi.fn(),
   getOrCreateSessionMock: vi.fn(),
+  invokeMock: vi.fn(),
+  isAgentLlmEnabledMock: vi.fn(() => true),
   lookupFaqMock: vi.fn(),
   resolveUserIdentityMock: vi.fn(),
   updateSessionMock: vi.fn(),
 }));
 
-vi.mock('../src/lib/qwenClient', () => ({
-  hasLlmConfig: true,
-  createChatCompletion: createChatCompletionMock,
+vi.mock('../src/lib/llmClient', () => ({
+  isAgentLlmEnabled: isAgentLlmEnabledMock,
+  createAgentLlm: createAgentLlmMock,
 }));
 
 vi.mock('../src/tools/faq', () => ({
@@ -52,8 +58,11 @@ describe('runAgent', () => {
 
   beforeEach(() => {
     appendTurnMock.mockReset();
-    createChatCompletionMock.mockReset();
+    createAgentLlmMock.mockReset();
     getOrCreateSessionMock.mockReset();
+    invokeMock.mockReset();
+    isAgentLlmEnabledMock.mockReset();
+    isAgentLlmEnabledMock.mockReturnValue(true);
     lookupFaqMock.mockReset();
     resolveUserIdentityMock.mockReset();
     updateSessionMock.mockReset();
@@ -65,18 +74,35 @@ describe('runAgent', () => {
     getOrCreateSessionMock.mockResolvedValue(baseSession);
     updateSessionMock.mockResolvedValue(baseSession);
     appendTurnMock.mockResolvedValue(undefined);
+
+    createAgentLlmMock.mockReturnValue({
+      bindTools: vi.fn(() => ({
+        invoke: invokeMock,
+      })),
+    });
   });
 
-  it('falls back to the tool result when Ollama returns an empty provider envelope', async () => {
-    createChatCompletionMock
+  it('dispatches native tool calls and returns the model final response', async () => {
+    invokeMock
       .mockResolvedValueOnce(
-        JSON.stringify({
-          action: 'lookup_faq',
-          tool_name: 'lookup_faq',
-          tool_args: { query: 'services offered' },
+        new AIMessage({
+          content: '',
+          tool_calls: [
+            {
+              name: 'lookup_faq',
+              args: { query: 'services offered' },
+              id: 'call_1',
+              type: 'tool_call',
+            },
+          ],
         }),
       )
-      .mockResolvedValueOnce('');
+      .mockResolvedValueOnce(
+        new AIMessage({
+          content:
+            'We offer brow, lash, skin, and injectable services across our branches.',
+        }),
+      );
 
     lookupFaqMock.mockResolvedValue({
       success: true,
@@ -100,6 +126,84 @@ describe('runAgent', () => {
     expect(result.response).toBe(
       'We offer brow, lash, skin, and injectable services across our branches.',
     );
-    expect(result.response).not.toContain('"model":"llama3.2"');
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns a usable greeting response', async () => {
+    invokeMock.mockResolvedValueOnce(
+      new AIMessage({
+        content:
+          'Welcome to Browz. I can help with availability, bookings, consultations, payments, and treatment questions.',
+      }),
+    );
+
+    const result = await runAgent({
+      message: 'Hello there',
+      sessionId: baseSession.sessionId,
+      channel: 'web',
+    });
+
+    expect(result.response.toLowerCase()).toContain('browz');
+    expect(result.toolCalls).toEqual([]);
+  });
+
+  it('returns availability results for an in-scope message', async () => {
+    const tomorrow = toIsoDate(new Date(Date.now() + 86400000));
+
+    invokeMock
+      .mockResolvedValueOnce(
+        new AIMessage({
+          content: '',
+          tool_calls: [
+            {
+              name: 'search_availability',
+              args: {
+                service: 'Brow Threading',
+                date: tomorrow,
+              },
+              id: 'call_avail',
+              type: 'tool_call',
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        new AIMessage({
+          content:
+            'Here are the available times I found for Brow Threading tomorrow: 09:00, 10:00, 11:30, 13:00, 15:00, 17:30.',
+        }),
+      );
+
+    const result = await runAgent({
+      message: 'Can you check Brow Threading availability tomorrow?',
+      sessionId: baseSession.sessionId,
+      channel: 'web',
+    });
+
+    expect(result.toolCalls).toEqual([
+      {
+        name: 'search_availability',
+        args: {
+          service: 'Brow Threading',
+          date: tomorrow,
+        },
+      },
+    ]);
+    expect(result.response.length).toBeGreaterThan(0);
+    expect(result.response.toLowerCase()).toContain('available');
+  });
+
+  it('returns a clear message when the LLM is not configured', async () => {
+    isAgentLlmEnabledMock.mockReturnValue(false);
+
+    const result = await runAgent({
+      message: 'Hello',
+      sessionId: baseSession.sessionId,
+      channel: 'web',
+    });
+
+    expect(result.response).toContain('LLM is not configured');
+    expect(result.toolCalls).toEqual([]);
+    expect(createAgentLlmMock).not.toHaveBeenCalled();
   });
 });

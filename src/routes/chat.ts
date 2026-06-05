@@ -30,4 +30,3 @@ async function handleChat(req: Request, res: Response) {
 }
 
 chatRouter.post('/', handleChat);
-chatRouter.post('/stream', handleChat);

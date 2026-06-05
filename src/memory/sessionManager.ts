@@ -2,7 +2,7 @@ import { Buffer } from 'buffer';
 import { supabase } from '../db/supabaseClient';
 import { generateSessionId } from '../lib/ids';
 import { normalizePhoneNumber } from '../lib/phone';
-import type { ConversationTurn, SessionContext } from '../types';
+import type { AgentContextSnapshot, ConversationTurn, SessionContext } from '../types';
 
 const sessionStore = new Map<string, SessionContext>();
 
@@ -20,6 +20,7 @@ function toSessionContext(row: Record<string, unknown>): SessionContext {
     conversationHistory: Array.isArray(row.conversation_history) ? (row.conversation_history as ConversationTurn[]) : [],
     lastIntent: (row.last_intent as SessionContext['lastIntent']) ?? null,
     lastBookingRef: row.last_booking_ref ? String(row.last_booking_ref) : null,
+    agentContext: (row.agent_context as AgentContextSnapshot | undefined) ?? undefined,
     status: (row.status as SessionContext['status']) ?? 'active',
     clarificationCount: 0,
     screeningState: row.screening_state as SessionContext['screeningState'],
@@ -38,6 +39,7 @@ function toDbSession(session: SessionContext): Record<string, unknown> {
     conversation_history: session.conversationHistory,
     last_intent: session.lastIntent,
     last_booking_ref: session.lastBookingRef,
+    agent_context: session.agentContext ?? null,
     status: session.status,
     screening_state: session.screeningState ?? null,
     created_at: session.createdAt,

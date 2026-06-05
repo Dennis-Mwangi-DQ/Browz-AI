@@ -11,6 +11,9 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   CORS_ORIGIN: z.string().default('*'),
+  LLM_PROVIDER: z
+    .enum(['ollama', 'openai', 'anthropic', 'openrouter'])
+    .default('ollama'),
   OPENROUTER_API_KEY: z.string().optional(),
   OPENROUTER_MODEL: z.string().default('qwen/qwen3.5-397b-a17b'),
   OPENROUTER_MODEL_DEV: z.string().default('minimax/minimax-m2.5'),
@@ -28,9 +31,14 @@ const envSchema = z.object({
     .string()
     .url()
     .default('http://127.0.0.1:11434'),
-  OLLAMA_MODEL: z.string().default('llama2'),
+  OLLAMA_MODEL: z.string().default('qwen2.5:7b'),
+  OLLAMA_EMBEDDING_MODEL: z.string().default('nomic-embed-text'),
   OLLAMA_API_KEY: z.string().optional(),
+  OPENAI_MODEL: z.string().default('gpt-4o'),
+  ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-20250514'),
   AGENT_MAX_TOOL_ITERATIONS: z.coerce.number().default(5),
+  AGENT_MAX_TOKENS: z.coerce.number().default(2048),
+  AGENT_TEMPERATURE: z.coerce.number().default(0.1),
   TAVILY_API_KEY: z.string().optional(),
   EXA_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
@@ -100,9 +108,18 @@ export function getActiveModel(): string {
 
 export function isLlmEnabled(): boolean {
   const env = getEnv();
-  return Boolean(
-    env.OPENAI_API_KEY || env.OPENROUTER_API_KEY || env.OLLAMA_API_URL,
-  );
+  switch (env.LLM_PROVIDER) {
+    case 'ollama':
+      return Boolean(env.OLLAMA_API_URL);
+    case 'openai':
+      return Boolean(env.OPENAI_API_KEY);
+    case 'anthropic':
+      return Boolean(env.ANTHROPIC_API_KEY);
+    case 'openrouter':
+      return Boolean(env.OPENROUTER_API_KEY);
+    default:
+      return false;
+  }
 }
 
 export function usesPostgres(): boolean {

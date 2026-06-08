@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { buildDemoSlots } from '../lib/demoData';
 import { supabase } from '../db/supabaseClient';
 import { fail, ok } from '../lib/result';
 import type { TimeSlot, ToolResult } from '../types';
@@ -34,36 +33,33 @@ export async function queryAvailability(params: {
     return fail('invalid_availability_params');
   }
 
+  if (!supabase) {
+    return fail('supabase_not_configured');
+  }
+
   try {
-    if (supabase) {
-      let query = supabase
-        .from('time_slots')
-        .select('*')
-        .eq('status', 'available')
-        .eq('service_id', params.serviceId)
-        .eq('branch_id', params.branchId)
-        .gte('start_time', `${params.date}T00:00:00.000Z`)
-        .lt('start_time', `${params.date}T23:59:59.999Z`)
-        .order('start_time', { ascending: true })
-        .limit(6);
+    let query = supabase
+      .from('time_slots')
+      .select('*')
+      .eq('status', 'available')
+      .eq('service_id', params.serviceId)
+      .eq('branch_id', params.branchId)
+      .gte('start_time', `${params.date}T00:00:00.000Z`)
+      .lt('start_time', `${params.date}T23:59:59.999Z`)
+      .order('start_time', { ascending: true })
+      .limit(6);
 
-      if (params.artistId) {
-        query = query.eq('artist_id', params.artistId);
-      }
-
-      const { data, error } = await query;
-      if (!error && data) {
-        return ok(data.map((slot) => mapSlot(slot)));
-      }
+    if (params.artistId) {
+      query = query.eq('artist_id', params.artistId);
     }
 
-    const fallback = buildDemoSlots(new Date(params.date)).map((slot) => ({
-      ...slot,
-      serviceId: params.serviceId,
-      branchId: params.branchId,
-    }));
+    const { data, error } = await query;
+    if (error) {
+      console.error('queryAvailability failed', error);
+      return fail('availability_lookup_failed');
+    }
 
-    return ok(fallback.slice(0, 6));
+    return ok((data ?? []).map((slot) => mapSlot(slot)));
   } catch (error) {
     console.error('queryAvailability failed', error);
     return fail('availability_lookup_failed');

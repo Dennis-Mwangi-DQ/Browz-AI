@@ -37,6 +37,9 @@ export function learnFromToolCalls(
     if (tc.name === 'search_availability') {
       topics.push('availability');
     }
+    if (tc.name === 'list_services') {
+      topics.push('services');
+    }
   }
 
   next.recentTopics = mergeTopics(next.recentTopics, topics);

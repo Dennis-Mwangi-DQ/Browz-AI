@@ -8,6 +8,7 @@ import { formatContextForPrompt, getContextSnapshot, learnFromToolCalls } from '
 import { createSessionTools } from './tools';
 import { getEnv } from '../lib/env';
 import { createAgentLlm, isAgentLlmEnabled } from '../lib/llmClient';
+import { addDays, startOfTodayUtc, toIsoDate } from '../lib/dates';
 import { appendTurn, getOrCreateSession, resolveUserIdentity, updateSession } from '../memory/sessionManager';
 import type { SessionContext } from '../types';
 
@@ -15,14 +16,23 @@ const SYSTEM_PROMPT = `You are a Browz booking concierge assistant for a beauty 
 
 Your job is to help users book appointments, check availability, and answer salon questions by calling the available tools to fetch real data. Follow these rules:
 
-1. ALWAYS call tools to get real booking and availability data — never make up information.
-2. If the user names a treatment, pass the treatment name in tool args; tools resolve service IDs internally.
-3. Before create_booking for T2 or T3 services, call check_pre_booking_requirements first.
-4. For modify_booking, cancel_booking, or initiate_payment, require a bookingReference from the user.
-5. Format times clearly and include booking references in final answers when available.
-6. If gates block a booking, explain the next step (consultation, patch test, or medical screening).
-7. If date, time, or service is missing, ask a concise follow-up question.
-8. Provide concise, helpful answers using the data returned from tools.`;
+1. ALWAYS call tools to get real booking, availability, and salon information — never make up services, prices, or policies.
+2. For questions about which services are offered, call list_services before answering. For pricing, location, hours, or policy, call lookup_faq.
+3. If the user names a treatment, pass the treatment name in tool args; tools resolve service IDs internally.
+4. Before create_booking for T2 or T3 services, call check_pre_booking_requirements first.
+5. For modify_booking, cancel_booking, or initiate_payment, require a bookingReference from the user.
+6. Format times clearly and include booking references in final answers when available.
+7. If gates block a booking, explain the next step (consultation, patch test, or medical screening).
+8. Never invent or guess dates. Only pass dates the user stated or relative terms you converted using the date context below.
+9. If the user did not specify a date for availability or booking, ask them before calling search_availability or create_booking.
+10. Provide concise, helpful answers using the data returned from tools only.`;
+
+function buildDateContext(): string {
+  const today = startOfTodayUtc();
+  return `## Date context
+Today: ${toIsoDate(today)}
+Tomorrow: ${toIsoDate(addDays(today, 1))}`;
+}
 
 function buildSystemContent(session: SessionContext): string {
   const snapshot = getContextSnapshot(session);
@@ -32,11 +42,15 @@ function buildSystemContent(session: SessionContext): string {
   };
   const sessionContext = formatContextForPrompt(seeded);
 
+  const dateContext = buildDateContext();
+
   if (!sessionContext) {
-    return SYSTEM_PROMPT;
+    return `${SYSTEM_PROMPT}\n\n${dateContext}`;
   }
 
   return `${SYSTEM_PROMPT}
+
+${dateContext}
 
 ## Active session context
 ${sessionContext}

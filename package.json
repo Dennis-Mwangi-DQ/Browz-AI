@@ -10,13 +10,8 @@
     "start": "node dist/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "seed:services": "tsx seed/services.ts",
-    "seed:branches": "tsx seed/branches.ts",
-    "seed:slots": "tsx seed/slots.ts",
     "seed:generate-slots": "tsx seed/generateSlots.ts",
-    "seed:faqs": "tsx seed/faqs.ts",
-    "seed:generate-embeddings": "tsx seed/generateEmbeddings.ts",
-    "seed:demo": "tsx seed/demoClient.ts"
+    "seed:generate-embeddings": "tsx seed/generateEmbeddings.ts"
   },
   "engines": {
     "node": ">=20"

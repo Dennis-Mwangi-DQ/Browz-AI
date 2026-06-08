@@ -8,9 +8,10 @@ import { getClearanceStatus } from '../tools/clearances';
 import { addNotes } from '../tools/notes';
 import { generatePaymentLink } from '../tools/payment';
 import { lookupFaq } from '../tools/faq';
+import { listServices } from '../tools/services';
 import { submitScreening } from '../tools/screenings';
 import { findBranchByName, findServiceByName, getDefaultBranch } from '../lib/catalog';
-import { toIsoDate } from '../lib/dates';
+import { resolveBookingDate } from '../lib/dates';
 import type { ScreeningAnswers, SessionContext } from '../types';
 
 type ToolResultRecord = Record<string, unknown>;
@@ -22,7 +23,7 @@ function resolveServiceName(service?: string) {
   return findServiceByName(service);
 }
 
-function resolveBranchName(branch?: string) {
+async function resolveBranchName(branch?: string) {
   if (!branch) {
     return getDefaultBranch();
   }
@@ -46,11 +47,14 @@ async function executeToolImpl(
       if (!branch) {
         return { success: false, error: 'branch_not_found' };
       }
-      const date = String(safeArgs.date ?? toIsoDate(new Date(Date.now() + 86400000)));
+      const resolvedDate = resolveBookingDate(safeArgs.date);
+      if (!resolvedDate.ok) {
+        return { success: false, error: resolvedDate.error };
+      }
       const availability = await queryAvailability({
         serviceId: service.id,
         branchId: branch.id,
-        date,
+        date: resolvedDate.date,
         artistId: undefined,
       });
       return {
@@ -69,14 +73,17 @@ async function executeToolImpl(
       if (!gate.gateCleared) {
         return { success: false, error: 'gate_blocked', reason: gate.reason };
       }
-      const date = String(safeArgs.date ?? toIsoDate(new Date(Date.now() + 86400000)));
+      const resolvedDate = resolveBookingDate(safeArgs.date);
+      if (!resolvedDate.ok) {
+        return { success: false, error: resolvedDate.error };
+      }
       if (!branch) {
         return { success: false, error: 'branch_not_found' };
       }
       const availability = await queryAvailability({
         serviceId: service.id,
         branchId: branch.id,
-        date,
+        date: resolvedDate.date,
       });
       if (!availability.success || !availability.data?.length) {
         return { success: false, error: 'no_slots_available' };
@@ -138,11 +145,14 @@ async function executeToolImpl(
       if (!branch) {
         return { success: false, error: 'branch_not_found' };
       }
-      const date = String(safeArgs.date ?? toIsoDate(new Date(Date.now() + 86400000)));
+      const resolvedDate = resolveBookingDate(safeArgs.date);
+      if (!resolvedDate.ok) {
+        return { success: false, error: resolvedDate.error };
+      }
       const availability = await queryAvailability({
         serviceId: service.id,
         branchId: branch.id,
-        date,
+        date: resolvedDate.date,
       });
       if (!availability.success || !availability.data?.length) {
         return { success: false, error: 'no_slots_available' };
@@ -213,6 +223,10 @@ async function executeToolImpl(
       const result = await lookupFaq({ query });
       return { success: result.success, data: result.data, error: result.error };
     }
+    case 'list_services': {
+      const result = await listServices();
+      return { success: result.success, data: result.data, error: result.error };
+    }
     case 'book_consultation': {
       const service = await resolveServiceName(String(safeArgs.service ?? ''));
       const branch = await resolveBranchName(String(safeArgs.branch ?? ''));
@@ -222,11 +236,14 @@ async function executeToolImpl(
       if (!branch) {
         return { success: false, error: 'branch_not_found' };
       }
-      const date = String(safeArgs.date ?? toIsoDate(new Date(Date.now() + 86400000)));
+      const resolvedDate = resolveBookingDate(safeArgs.date);
+      if (!resolvedDate.ok) {
+        return { success: false, error: resolvedDate.error };
+      }
       const availability = await queryAvailability({
         serviceId: service.id,
         branchId: branch.id,
-        date,
+        date: resolvedDate.date,
       });
       if (!availability.success || !availability.data?.length) {
         return { success: false, error: 'no_slots_available' };
@@ -389,6 +406,8 @@ export function createSessionTools(session: SessionContext) {
   const lookupFaqImpl = async ({ query }: { query: string }) =>
     executeToolImpl('lookup_faq', { query }, session);
 
+  const listServicesImpl = async () => executeToolImpl('list_services', {}, session);
+
   const bookConsultationImpl = async ({
     service,
     branch,
@@ -423,7 +442,12 @@ export function createSessionTools(session: SessionContext) {
     schema: z.object({
       service: z.string().describe('Treatment name, e.g. Brow Threading'),
       branch: z.string().optional().describe('Branch or city name'),
-      date: z.string().describe('ISO date YYYY-MM-DD'),
+      date: z
+        .string()
+        .optional()
+        .describe(
+          'ISO date YYYY-MM-DD from the user request only. Omit entirely if the user did not specify a date.',
+        ),
       time: z.string().optional().describe('Preferred time HH:MM 24h'),
     }),
   });
@@ -491,10 +515,17 @@ export function createSessionTools(session: SessionContext) {
   const lookupFaqTool = tool(lookupFaqImpl, {
     name: 'lookup_faq',
     description:
-      'Answer general questions about services, pricing, location, or salon policy.',
+      'Answer general questions about pricing, location, hours, or salon policy from the FAQ database.',
     schema: z.object({
       query: z.string().describe('User question about salon services or policy'),
     }),
+  });
+
+  const listServicesTool = tool(listServicesImpl, {
+    name: 'list_services',
+    description:
+      'List all active treatments and services offered by the salon from the database.',
+    schema: z.object({}),
   });
 
   const bookConsultationTool = tool(bookConsultationImpl, {
@@ -554,6 +585,7 @@ export function createSessionTools(session: SessionContext) {
     addNotesTool,
     initiatePaymentTool,
     lookupFaqTool,
+    listServicesTool,
     bookConsultationTool,
     checkClearanceStatusTool,
     checkFrequencyTool,
@@ -573,6 +605,7 @@ export function createSessionTools(session: SessionContext) {
     initiate_payment: (args) =>
       initiatePaymentImpl(args as Parameters<typeof initiatePaymentImpl>[0]),
     lookup_faq: (args) => lookupFaqImpl(args as Parameters<typeof lookupFaqImpl>[0]),
+    list_services: () => listServicesImpl(),
     book_consultation: (args) =>
       bookConsultationImpl(args as Parameters<typeof bookConsultationImpl>[0]),
     check_clearance_status: (args) =>

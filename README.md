@@ -24,7 +24,8 @@ Swap cloud providers by changing env only — no agent code changes required.
 - Ollama-first local development with cloud provider swap via `LLM_PROVIDER`
 - Ollama embeddings for FAQ vector search when no OpenAI/OpenRouter key is set
 - Tool layer for availability, bookings, consultations, screenings, clearances, notes, payments, and FAQs
-- Supabase schema and seed scripts
+- Supabase-backed catalog, availability, and FAQ tools
+- Slot/embedding generator scripts for Supabase maintenance
 - Vitest tests for `runAgent` and tools
 
 ## Quick start
@@ -103,7 +104,8 @@ Returns HTTP 503 when the LLM is not configured or Ollama is unreachable.
 
 ## Notes
 
+- All runtime data (services, branches, slots, FAQs, bookings) comes from Supabase — there is no in-code demo fallback.
 - FAQ vector search uses Ollama embeddings locally, or OpenAI/OpenRouter embeddings when API keys are set.
 - Session `agentContext` (service/branch/booking focus) persists to Supabase when configured.
-- For production, run [supabase/schema.sql](supabase/schema.sql), seed data, and configure Twilio/Stripe as needed.
+- For production, run [supabase/schema.sql](supabase/schema.sql), load your data into Supabase, then run `npm run seed:generate-slots` / `npm run seed:generate-embeddings` as needed.
 - Historical design notes live in [browz-agent-backend-plan.md](browz-agent-backend-plan.md); the live agent is `runAgent`, not the removed pipeline.

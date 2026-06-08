@@ -1,5 +1,4 @@
 import { getEnv } from './env';
-import { DEMO_BRANCHES, DEMO_SERVICES } from './demoData';
 import { resolveGateCategory } from './serviceMetadata';
 import { supabase } from '../db/supabaseClient';
 import type { Branch, Service } from '../types';
@@ -42,69 +41,98 @@ function mapBranch(row: Record<string, unknown>): Branch {
 }
 
 export async function getServiceById(serviceId: string): Promise<Service | null> {
-  if (supabase) {
-    const { data, error } = await supabase.from('services').select('*').eq('id', serviceId).maybeSingle();
-    if (!error && data) {
-      return mapService(data);
-    }
-  }
-
-  return DEMO_SERVICES.find((service) => service.id === serviceId) ?? null;
-}
-
-export async function findServiceByName(name?: string): Promise<Service | null> {
-  if (!name) {
+  if (!supabase) {
     return null;
   }
 
-  if (supabase) {
-    const { data, error } = await supabase.from('services').select('*').ilike('title', `%${name}%`).limit(1);
-    if (!error && data && data.length > 0) {
-      return mapService(data[0] as Record<string, unknown>);
-    }
+  const { data, error } = await supabase
+    .from('services')
+    .select('*')
+    .eq('id', serviceId)
+    .maybeSingle();
+
+  if (error || !data) {
+    return null;
   }
 
-  const normalized = name.toLowerCase();
-  return (
-    DEMO_SERVICES.find((service) => service.name.toLowerCase().includes(normalized) || normalized.includes(service.name.toLowerCase())) ??
-    null
-  );
+  return mapService(data);
+}
+
+export async function findServiceByName(name?: string): Promise<Service | null> {
+  if (!name || !supabase) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from('services')
+    .select('*')
+    .ilike('title', `%${name}%`)
+    .limit(1);
+
+  if (error || !data?.length) {
+    return null;
+  }
+
+  return mapService(data[0] as Record<string, unknown>);
 }
 
 export async function getBranchById(branchId: string): Promise<Branch | null> {
-  if (supabase) {
-    const { data, error } = await supabase.from('branches').select('*').eq('id', branchId).maybeSingle();
-    if (!error && data) {
-      return mapBranch(data);
+  if (!supabase) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from('branches')
+    .select('*')
+    .eq('id', branchId)
+    .maybeSingle();
+
+  if (error || !data) {
+    return null;
+  }
+
+  return mapBranch(data);
+}
+
+export async function getDefaultBranch(): Promise<Branch | null> {
+  if (!supabase) {
+    return null;
+  }
+
+  const configured = getEnv('DEFAULT_BRANCH_ID');
+  if (configured) {
+    const branch = await getBranchById(configured);
+    if (branch) {
+      return branch;
     }
   }
 
-  return DEMO_BRANCHES.find((branch) => branch.id === branchId) ?? null;
+  const { data, error } = await supabase.from('branches').select('*').limit(1).maybeSingle();
+  if (error || !data) {
+    return null;
+  }
+
+  return mapBranch(data);
 }
 
 export async function findBranchByName(name?: string): Promise<Branch | null> {
+  if (!supabase) {
+    return null;
+  }
+
   if (!name) {
     return getDefaultBranch();
   }
 
-  if (supabase) {
-    const { data, error } = await supabase.from('branches').select('*').or(`name.ilike.%${name}%,city.ilike.%${name}%`).limit(1);
-    if (!error && data && data.length > 0) {
-      return mapBranch(data[0] as Record<string, unknown>);
-    }
+  const { data, error } = await supabase
+    .from('branches')
+    .select('*')
+    .or(`name.ilike.%${name}%,city.ilike.%${name}%`)
+    .limit(1);
+
+  if (error || !data?.length) {
+    return getDefaultBranch();
   }
 
-  const normalized = name.toLowerCase();
-  return (
-    DEMO_BRANCHES.find((branch) => branch.name.toLowerCase().includes(normalized) || branch.city.toLowerCase().includes(normalized)) ??
-    getDefaultBranch()
-  );
-}
-
-export function getDefaultBranch(): Branch {
-  const configured = getEnv('DEFAULT_BRANCH_ID');
-  if (configured) {
-    return DEMO_BRANCHES.find((branch) => branch.id === configured) ?? DEMO_BRANCHES[0]!;
-  }
-  return DEMO_BRANCHES[0]!;
+  return mapBranch(data[0] as Record<string, unknown>);
 }

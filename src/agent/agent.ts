@@ -104,13 +104,19 @@ export async function runAgent(params: {
   channel: 'web' | 'whatsapp';
   authToken?: string;
   whatsappNumber?: string;
-}): Promise<{ response: string; sessionId: string; toolCalls: { name: string; args: Record<string, unknown> }[] }> {
+}): Promise<{
+  response: string;
+  sessionId: string;
+  toolCalls: { name: string; args: Record<string, unknown> }[];
+  toolResults: { name: string; result: unknown }[];
+}> {
   if (!isAgentLlmEnabled()) {
     return {
       response:
         'LLM is not configured. Set LLM_PROVIDER and the required credentials (e.g. OLLAMA_API_URL for local Ollama) and try again.',
       sessionId: params.sessionId ?? 'unknown',
       toolCalls: [],
+      toolResults: [],
     };
   }
 
@@ -136,6 +142,7 @@ export async function runAgent(params: {
   const llmWithTools = llm.bindTools(allTools);
   const messages = buildConversationMessages(activeSession, params.message);
   const executedToolCalls: { name: string; args: Record<string, unknown> }[] = [];
+  const executedToolResults: { name: string; result: unknown }[] = [];
   const maxIterations = getEnv().AGENT_MAX_TOOL_ITERATIONS;
 
   for (let i = 0; i < maxIterations; i += 1) {
@@ -172,6 +179,7 @@ export async function runAgent(params: {
         response: responseText,
         sessionId: activeSession.sessionId,
         toolCalls: executedToolCalls,
+        toolResults: executedToolResults,
       };
     }
 
@@ -184,9 +192,11 @@ export async function runAgent(params: {
       try {
         const impl = toolImplementations[tc.name];
         if (!impl) {
+          const errResult = { error: `Unknown tool: ${tc.name}` };
+          executedToolResults.push({ name: tc.name, result: errResult });
           messages.push(
             new ToolMessage({
-              content: JSON.stringify({ error: `Unknown tool: ${tc.name}` }),
+              content: JSON.stringify(errResult),
               tool_call_id: tc.id ?? '',
             }),
           );
@@ -194,6 +204,7 @@ export async function runAgent(params: {
         }
 
         const result = await impl(tc.args as Record<string, unknown>);
+        executedToolResults.push({ name: tc.name, result });
         messages.push(
           new ToolMessage({
             content: typeof result === 'string' ? result : JSON.stringify(result),
@@ -201,11 +212,11 @@ export async function runAgent(params: {
           }),
         );
       } catch (err) {
+        const errResult = { error: err instanceof Error ? err.message : 'Unknown error' };
+        executedToolResults.push({ name: tc.name, result: errResult });
         messages.push(
           new ToolMessage({
-            content: JSON.stringify({
-              error: err instanceof Error ? err.message : 'Unknown error',
-            }),
+            content: JSON.stringify(errResult),
             tool_call_id: tc.id ?? '',
           }),
         );
@@ -242,5 +253,6 @@ export async function runAgent(params: {
     response: fallback,
     sessionId: activeSession.sessionId,
     toolCalls: executedToolCalls,
+    toolResults: executedToolResults,
   };
 }

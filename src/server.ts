@@ -2,6 +2,7 @@ import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
 import { chatRouter } from './routes/chat';
+import { dataRouter } from './routes/data';
 import { whatsappRouter } from './routes/whatsapp';
 import { getHealthStatus } from './lib/healthCheck';
 import { getEnv } from './lib/env';
@@ -20,6 +21,7 @@ if (serveDevUi) {
 }
 
 app.use('/chat', chatRouter);
+app.use('/data', dataRouter);
 app.use('/whatsapp', whatsappRouter);
 
 app.get('/health', async (_req, res) => {
@@ -43,6 +45,9 @@ app.get('/', (_req, res) => {
       health: 'GET /health',
       chat: 'POST /chat',
       whatsapp: 'POST /whatsapp',
+      services: 'GET /data/services',
+      branches: 'GET /data/branches',
+      availability: 'GET /data/availability?serviceId=&branchId=&date=',
     },
   });
 });

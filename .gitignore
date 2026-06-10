@@ -6,3 +6,8 @@ coverage/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.env.local
+
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md

@@ -9,9 +9,9 @@ import { addNotes } from '../tools/notes';
 import { generatePaymentLink } from '../tools/payment';
 import { getContextSnapshot } from './agent-session';
 import { lookupFaq } from '../tools/faq';
-import { listServices } from '../tools/services';
+import { listServices, listBranchesForService, listArtistsForServiceAtBranch } from '../tools/services';
 import { submitScreening } from '../tools/screenings';
-import { findBranchByName, findServiceByName, getDefaultBranch } from '../lib/catalog';
+import { findArtistByName, findBranchByName, findServiceByName, getDefaultBranch } from '../lib/catalog';
 import { resolveBookingDate } from '../lib/dates';
 import type { ScreeningAnswers, SessionContext } from '../types';
 
@@ -39,6 +39,17 @@ async function executeToolImpl(
   const safeArgs = { ...args };
 
   switch (name) {
+    case 'list_branches_for_service': {
+      const result = await listBranchesForService({ service: String(safeArgs.service ?? '') });
+      return { success: result.success, data: result.data, error: result.error };
+    }
+    case 'list_artists_for_service_at_branch': {
+      const result = await listArtistsForServiceAtBranch({
+        service: String(safeArgs.service ?? ''),
+        branch: String(safeArgs.branch ?? ''),
+      });
+      return { success: result.success, data: result.data, error: result.error };
+    }
     case 'search_availability': {
       const service = await resolveServiceName(String(safeArgs.service ?? ''));
       const branch = await resolveBranchName(String(safeArgs.branch ?? ''));
@@ -52,15 +63,21 @@ async function executeToolImpl(
       if (!resolvedDate.ok) {
         return { success: false, error: resolvedDate.error };
       }
+      // Resolve optional artist filter
+      const artistName = safeArgs.artist ? String(safeArgs.artist) : undefined;
+      const artist = artistName ? await findArtistByName(artistName, branch.id) : null;
       const availability = await queryAvailability({
         serviceId: service.id,
         branchId: branch.id,
         date: resolvedDate.date,
-        artistId: undefined,
+        artistId: artist?.id ?? undefined,
       });
       return {
         success: availability.success,
-        data: availability.data,
+        data: availability.data ? {
+          slots: availability.data,
+          artistResolved: artist ? { id: artist.id, name: artist.name } : null,
+        } : undefined,
         error: availability.error,
       };
     }
@@ -81,24 +98,55 @@ async function executeToolImpl(
       if (!branch) {
         return { success: false, error: 'branch_not_found' };
       }
+
+      // Resolve the requested artist (if any) and lock availability to them
+      const artistName = safeArgs.artist ? String(safeArgs.artist) : undefined;
+      const requestedArtist = artistName ? await findArtistByName(artistName, branch.id) : null;
+
       const availability = await queryAvailability({
         serviceId: service.id,
         branchId: branch.id,
         date: resolvedDate.date,
+        artistId: requestedArtist?.id ?? undefined,
       });
+
+      // If artist was requested but has no slots, surface alternatives
+      if (requestedArtist && (!availability.success || !availability.data?.length)) {
+        // Fall back to any artist so we can suggest alternative times
+        const anyAvailability = await queryAvailability({
+          serviceId: service.id,
+          branchId: branch.id,
+          date: resolvedDate.date,
+        });
+        const nextSlots = (anyAvailability.data ?? []).slice(0, 3).map((s) => s.startTime.slice(11, 16));
+        return {
+          success: false,
+          error: 'artist_unavailable_at_requested_time',
+          artist: requestedArtist.name,
+          nextAvailableTimes: nextSlots,
+        };
+      }
+
       if (!availability.success || !availability.data?.length) {
         return { success: false, error: 'no_slots_available' };
       }
+
       const matchingSlot =
         availability.data.find((slot) => {
           const timeArg = safeArgs.time;
-          if (!timeArg) {
-            return true;
-          }
+          if (!timeArg) return true;
           return slot.startTime.slice(11, 16) === String(timeArg);
-        }) ?? availability.data[0];
+        }) ?? null;
+
+      // Requested time doesn't match — suggest alternatives
       if (!matchingSlot) {
-        return { success: false, error: 'no_slots_available' };
+        const nextSlots = availability.data.slice(0, 3).map((s) => s.startTime.slice(11, 16));
+        return {
+          success: false,
+          error: 'requested_time_unavailable',
+          artist: requestedArtist?.name ?? null,
+          nextAvailableTimes: nextSlots,
+        };
       }
 
       const snapshot = getContextSnapshot(session);
@@ -126,7 +174,7 @@ async function executeToolImpl(
         serviceId: service.id,
         branchId: branch.id,
         slotId: matchingSlot.id,
-        artistId: matchingSlot.artistId ?? undefined,
+        artistId: matchingSlot.artistId ?? requestedArtist?.id ?? undefined,
         notes: String(safeArgs.notes ?? ''),
         channel: session.channel,
         bookingType: String(safeArgs.bookingType ?? 'single') as
@@ -148,6 +196,7 @@ async function executeToolImpl(
           paymentRule,
           service: service.name,
           branch: branch.name,
+          artist: requestedArtist?.name ?? matchingSlot.artistId ?? null,
           slotStart: matchingSlot.startTime,
         },
       };
@@ -346,23 +395,37 @@ async function executeToolImpl(
 }
 
 export function createSessionTools(session: SessionContext) {
+  const listBranchesForServiceImpl = async ({ service }: { service: string }) =>
+    executeToolImpl('list_branches_for_service', { service }, session);
+
+  const listArtistsForServiceAtBranchImpl = async ({
+    service,
+    branch,
+  }: {
+    service: string;
+    branch: string;
+  }) => executeToolImpl('list_artists_for_service_at_branch', { service, branch }, session);
+
   const searchAvailabilityImpl = async ({
     service,
     branch,
     date,
     time,
+    artist,
   }: {
     service: string;
     branch?: string;
     date: string;
     time?: string;
-  }) => executeToolImpl('search_availability', { service, branch, date, time }, session);
+    artist?: string;
+  }) => executeToolImpl('search_availability', { service, branch, date, time, artist }, session);
 
   const createBookingImpl = async ({
     service,
     branch,
     date,
     time,
+    artist,
     notes,
     bookingType,
     visitorName,
@@ -372,6 +435,7 @@ export function createSessionTools(session: SessionContext) {
     branch?: string;
     date?: string;
     time?: string;
+    artist?: string;
     notes?: string;
     bookingType?: string;
     visitorName?: string;
@@ -379,7 +443,7 @@ export function createSessionTools(session: SessionContext) {
   }) =>
     executeToolImpl(
       'create_booking',
-      { service, branch, date, time, notes, bookingType, visitorName, visitorContact },
+      { service, branch, date, time, artist, notes, bookingType, visitorName, visitorContact },
       session,
     );
 
@@ -462,10 +526,29 @@ export function createSessionTools(session: SessionContext) {
   const checkPreBookingRequirementsImpl = async ({ service }: { service: string }) =>
     executeToolImpl('check_pre_booking_requirements', { service }, session);
 
+  const listBranchesForServiceTool = tool(listBranchesForServiceImpl, {
+    name: 'list_branches_for_service',
+    description:
+      'Return all branches where a given service is available. Call this first when a user wants to book, before asking for a date or artist.',
+    schema: z.object({
+      service: z.string().describe('Treatment name, e.g. Brow Threading'),
+    }),
+  });
+
+  const listArtistsForServiceAtBranchTool = tool(listArtistsForServiceAtBranchImpl, {
+    name: 'list_artists_for_service_at_branch',
+    description:
+      'Return all artists/practitioners at a specific branch who offer a given service. Call this after the user has picked a branch.',
+    schema: z.object({
+      service: z.string().describe('Treatment name'),
+      branch: z.string().describe('Branch or city name'),
+    }),
+  });
+
   const searchAvailability = tool(searchAvailabilityImpl, {
     name: 'search_availability',
     description:
-      'Find available appointment slots by service, branch, date, and optional time.',
+      'Find available appointment slots by service, branch, date, and optional artist. Always call this after the user has selected an artist to confirm their availability at a given time.',
     schema: z.object({
       service: z.string().describe('Treatment name, e.g. Brow Threading'),
       branch: z.string().optional().describe('Branch or city name'),
@@ -476,16 +559,18 @@ export function createSessionTools(session: SessionContext) {
           'ISO date YYYY-MM-DD from the user request only. Omit entirely if the user did not specify a date.',
         ),
       time: z.string().optional().describe('Preferred time HH:MM 24h'),
+      artist: z.string().optional().describe('Artist or practitioner name selected by the user'),
     }),
   });
 
   const createBookingTool = tool(createBookingImpl, {
     name: 'create_booking',
     description:
-      'Create a new booking for a service, branch, date, and time. For visitors, pass visitorName and visitorContact. Payment link is generated automatically when required.',
+      'Create a new booking for a service, branch, artist, date, and time. For visitors, pass visitorName and visitorContact. Payment link is generated automatically when required. If the artist is unavailable at the requested time, the tool returns nextAvailableTimes — present these to the user.',
     schema: z.object({
       service: z.string().describe('Treatment name'),
       branch: z.string().optional().describe('Branch or city name'),
+      artist: z.string().optional().describe('Artist or practitioner name selected by the user'),
       date: z.string().optional().describe('ISO date YYYY-MM-DD'),
       time: z.string().optional().describe('Preferred time HH:MM 24h'),
       notes: z.string().optional().describe('Booking notes or preferences'),
@@ -610,6 +695,8 @@ export function createSessionTools(session: SessionContext) {
   });
 
   const allTools = [
+    listBranchesForServiceTool,
+    listArtistsForServiceAtBranchTool,
     searchAvailability,
     createBookingTool,
     modifyBookingTool,
@@ -629,6 +716,10 @@ export function createSessionTools(session: SessionContext) {
     string,
     (args: Record<string, unknown>) => Promise<ToolResultRecord>
   > = {
+    list_branches_for_service: (args) =>
+      listBranchesForServiceImpl(args as Parameters<typeof listBranchesForServiceImpl>[0]),
+    list_artists_for_service_at_branch: (args) =>
+      listArtistsForServiceAtBranchImpl(args as Parameters<typeof listArtistsForServiceAtBranchImpl>[0]),
     search_availability: (args) => searchAvailabilityImpl(args as Parameters<typeof searchAvailabilityImpl>[0]),
     create_booking: (args) => createBookingImpl(args as Parameters<typeof createBookingImpl>[0]),
     modify_booking: (args) => modifyBookingImpl(args as Parameters<typeof modifyBookingImpl>[0]),

@@ -154,6 +154,15 @@ export interface Branch {
   status?: string;
 }
 
+export interface Artist {
+  id: string;
+  name: string;
+  role: string | null;
+  title: string | null;
+  branchId: string;
+  serviceIds: string[];
+}
+
 export interface TimeSlot {
   id: string;
   branchId: string;

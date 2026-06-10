@@ -1,7 +1,7 @@
 import { getEnv } from './env';
 import { resolveGateCategory } from './serviceMetadata';
 import { supabase } from '../db/supabaseClient';
-import type { Branch, Service } from '../types';
+import type { Artist, Branch, Service } from '../types';
 
 function mapService(row: Record<string, unknown>): Service {
   const baseService = {
@@ -135,4 +135,38 @@ export async function findBranchByName(name?: string): Promise<Branch | null> {
   }
 
   return mapBranch(data[0] as Record<string, unknown>);
+}
+
+function mapArtist(row: Record<string, unknown>): Artist {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    role: row.role ? String(row.role) : null,
+    title: row.title ? String(row.title) : null,
+    branchId: String(row.branch_id),
+    serviceIds: Array.isArray(row.service_ids) ? (row.service_ids as string[]) : [],
+  };
+}
+
+export async function findArtistByName(name?: string, branchId?: string): Promise<Artist | null> {
+  if (!name || !supabase) {
+    return null;
+  }
+
+  let query = supabase
+    .from('artists')
+    .select('*')
+    .ilike('name', `%${name}%`)
+    .eq('active', true);
+
+  if (branchId) {
+    query = query.eq('branch_id', branchId);
+  }
+
+  const { data, error } = await query.limit(1);
+  if (error || !data?.length) {
+    return null;
+  }
+
+  return mapArtist(data[0] as Record<string, unknown>);
 }

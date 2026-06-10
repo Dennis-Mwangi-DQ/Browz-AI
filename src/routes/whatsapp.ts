@@ -1,8 +1,12 @@
 import { type Request, Router } from 'express';
 import twilio from 'twilio';
 import { runAgent } from '../agent/agent';
+import { handleOfferDeclined } from '../agent/recoveryOrchestrator';
 import { getEnv } from '../lib/env';
 import { generateSessionId } from '../lib/ids';
+import { getPendingOffer, clearPendingOffer } from '../lib/pendingOffers';
+import { parseYesNo } from '../lib/dates';
+import { confirmSlotOffer, declineSlotOffer } from '../tools/waitlist';
 import { WhatsAppWebhookBody } from '../types';
 
 export const whatsappRouter = Router();
@@ -30,15 +34,49 @@ whatsappRouter.post('/', async (req, res) => {
   }
 
   try {
-    const sessionId = generateSessionId(parsed.data.From);
+    const from = parsed.data.From;
+    const body = parsed.data.Body.trim();
+    const sessionId = generateSessionId(from);
+    const twiml = new twilio.twiml.MessagingResponse();
+
+    const pendingOffer = getPendingOffer({ contact: from });
+    const yesNo = parseYesNo(body);
+
+    if (pendingOffer && yesNo !== null) {
+      if (yesNo) {
+        const result = await confirmSlotOffer({
+          waitlistRef: pendingOffer.waitlistRef,
+          slotId: pendingOffer.slotId,
+          channel: 'whatsapp',
+        });
+        clearPendingOffer({ contact: from });
+        if (result.success && result.data) {
+          twiml.message(
+            `Your slot is confirmed! Booking reference: ${result.data.bookingId}. We look forward to seeing you.`,
+          );
+        } else {
+          twiml.message(
+            'Sorry, we could not confirm that slot. Please contact the salon or try again.',
+          );
+        }
+      } else {
+        const result = await declineSlotOffer(pendingOffer.waitlistRef);
+        clearPendingOffer({ contact: from });
+        if (result.success && result.data?.slotId) {
+          void handleOfferDeclined(pendingOffer.waitlistRef, result.data.slotId);
+        }
+        twiml.message('No problem — you remain on the waitlist for the next opening.');
+      }
+      return res.type('text/xml').send(twiml.toString());
+    }
+
     const result = await runAgent({
-      message: parsed.data.Body,
+      message: body,
       sessionId,
       channel: 'whatsapp',
-      whatsappNumber: parsed.data.From,
+      whatsappNumber: from,
     });
 
-    const twiml = new twilio.twiml.MessagingResponse();
     twiml.message(result.response);
 
     return res.type('text/xml').send(twiml.toString());

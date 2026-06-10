@@ -13,8 +13,9 @@ import { createSessionTools } from './tools';
 import { getEnv } from '../lib/env';
 import { createAgentLlm, isAgentLlmEnabled } from '../lib/llmClient';
 import { addDays, startOfTodayUtc, toIsoDate } from '../lib/dates';
+import { getPendingOffer } from '../lib/pendingOffers';
 import { appendTurn, getOrCreateSession, resolveUserIdentity, updateSession } from '../memory/sessionManager';
-import type { SessionContext } from '../types';
+import type { PendingSlotOffer, SessionContext } from '../types';
 
 const SYSTEM_PROMPT = `You are a Browz booking concierge assistant for a beauty salon in the UAE.
 
@@ -37,7 +38,14 @@ Your job is to help users book appointments, check availability, and answer salo
 12. If gates block a booking, explain the next step (consultation, patch test, or medical screening).
 13. Never invent or guess dates. Only pass dates the user stated or relative terms you converted using the date context below.
 14. For visitors (not authenticated clients), collect full name and contact number before create_booking and pass them as visitorName and visitorContact.
-15. Provide concise, helpful answers using the data returned from tools only.`;
+15. Provide concise, helpful answers using the data returned from tools only.
+
+**Waitlist & recovery:**
+16. When search_availability returns no slots, offer to add the user to the waitlist via add_to_waitlist.
+17. Collect visitor name and contact before add_to_waitlist for unauthenticated users.
+18. When a user has an active waitlist offer, guide them to confirm_slot_offer or decline_slot_offer.
+19. Before confirm_slot_offer for T2/T3 services, call check_pre_booking_requirements first.
+20. Walk-in slots (open_for_walkin) can be booked via the normal create_booking flow.`;
 
 function buildDateContext(): string {
   const today = startOfTodayUtc();
@@ -124,6 +132,7 @@ export async function runAgent(params: {
   sessionId: string;
   toolCalls: { name: string; args: Record<string, unknown> }[];
   toolResults: { name: string; result: unknown }[];
+  pendingOffer?: PendingSlotOffer | null;
 }> {
   if (!isAgentLlmEnabled()) {
     return {
@@ -192,6 +201,7 @@ export async function runAgent(params: {
       const nextSnapshot = learnFromToolCalls(
         getContextSnapshot(activeSession),
         executedToolCalls,
+        executedToolResults,
       );
       await updateSession(activeSession.sessionId, {
         agentContext: nextSnapshot,
@@ -200,11 +210,18 @@ export async function runAgent(params: {
           : {}),
       });
 
+      const snapshot = getContextSnapshot(activeSession);
+      const pendingOffer = getPendingOffer({
+        contact: params.visitorContact ?? snapshot.visitorContact ?? params.whatsappNumber,
+        clientId: resolvedClientId,
+      });
+
       return {
         response: responseText,
         sessionId: activeSession.sessionId,
         toolCalls: executedToolCalls,
         toolResults: executedToolResults,
+        pendingOffer,
       };
     }
 
@@ -266,6 +283,7 @@ export async function runAgent(params: {
   const nextSnapshot = learnFromToolCalls(
     getContextSnapshot(activeSession),
     executedToolCalls,
+    executedToolResults,
   );
   await updateSession(activeSession.sessionId, {
     agentContext: nextSnapshot,
@@ -274,10 +292,17 @@ export async function runAgent(params: {
       : {}),
   });
 
+  const snapshot = getContextSnapshot(activeSession);
+  const pendingOffer = getPendingOffer({
+    contact: params.visitorContact ?? snapshot.visitorContact ?? params.whatsappNumber,
+    clientId: resolvedClientId,
+  });
+
   return {
     response: fallback,
     sessionId: activeSession.sessionId,
     toolCalls: executedToolCalls,
     toolResults: executedToolResults,
+    pendingOffer,
   };
 }

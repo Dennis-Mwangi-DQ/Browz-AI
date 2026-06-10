@@ -71,6 +71,7 @@ export const AgentContextSnapshotSchema = z.object({
   lastService: z.string().optional(),
   lastBranch: z.string().optional(),
   lastBookingRef: z.string().optional(),
+  lastWaitlistRef: z.string().optional(),
   visitorName: z.string().optional(),
   visitorContact: z.string().optional(),
   recentTopics: z.array(z.string()).optional(),
@@ -163,6 +164,13 @@ export interface Artist {
   serviceIds: string[];
 }
 
+export type TimeSlotStatus =
+  | 'available'
+  | 'booked'
+  | 'blocked'
+  | 'hold'
+  | 'open_for_walkin';
+
 export interface TimeSlot {
   id: string;
   branchId: string;
@@ -170,7 +178,98 @@ export interface TimeSlot {
   artistId?: string | null;
   startTime: string;
   endTime: string;
-  status: 'available' | 'booked' | 'blocked';
+  status: TimeSlotStatus;
+  isWalkin?: boolean;
+}
+
+export type WaitlistStatus =
+  | 'waiting'
+  | 'offered'
+  | 'confirmed'
+  | 'declined'
+  | 'expired'
+  | 'cancelled';
+
+export type NotificationChannel = 'whatsapp' | 'web' | 'both';
+
+export interface WaitlistEntry {
+  id: string;
+  clientId: string | null;
+  visitorName: string | null;
+  visitorContact: string;
+  serviceId: string;
+  branchId: string;
+  preferredDate: string | null;
+  preferredDateRangeStart: string | null;
+  preferredDateRangeEnd: string | null;
+  preferredTimeStart: string | null;
+  preferredTimeEnd: string | null;
+  preferredArtistId: string | null;
+  notificationChannel: NotificationChannel;
+  priority: number;
+  status: WaitlistStatus;
+  offerSentAt: string | null;
+  offerExpiresAt: string | null;
+  offeredSlotId: string | null;
+  offeredBookingRef: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type RecoveryOutcome =
+  | 'waitlist_filled'
+  | 'walkin_filled'
+  | 'unfilled'
+  | 'staff_assigned';
+
+export type CancellationSource = 'agent' | 'staff' | 'portal' | 'no_show';
+
+export interface SlotRecoveryLog {
+  id: string;
+  bookingId: string;
+  slotId: string;
+  serviceId: string;
+  branchId: string;
+  cancellationSource: CancellationSource;
+  cancelledAt: string;
+  recoveryStartedAt: string;
+  waitlistCandidatesFound: number;
+  offersSent: number;
+  offersDeclined: number;
+  offersExpired: number;
+  outcome: RecoveryOutcome | null;
+  recoveredBookingId: string | null;
+  recoveryCompletedAt: string | null;
+  notes: string | null;
+  createdAt: string;
+}
+
+export type BookingCancelledEvent = {
+  bookingId: string;
+  slotId: string;
+  serviceId: string;
+  branchId: string;
+  startTime: string;
+  cancellationSource: CancellationSource;
+};
+
+export type BookingSource =
+  | 'ai_concierge'
+  | 'waitlist_recovery'
+  | 'walkin_agent'
+  | 'walkin_staff';
+
+export interface PendingSlotOffer {
+  waitlistRef: string;
+  slotId: string;
+  serviceId: string;
+  branchId: string;
+  serviceName: string;
+  branchName: string;
+  startTime: string;
+  artistName: string | null;
+  expiresAt: string;
 }
 
 export interface PaymentRule {

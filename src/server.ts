@@ -1,7 +1,11 @@
 import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
+import { startRecoveryListener } from './agent/recoveryOrchestrator';
+import { startExpiredOffersJob } from './jobs/processExpiredOffers';
+import { startNoShowsJob } from './jobs/processNoShows';
 import { chatRouter } from './routes/chat';
+import { bookingsRouter } from './routes/bookings';
 import { dataRouter } from './routes/data';
 import { whatsappRouter } from './routes/whatsapp';
 import { getHealthStatus } from './lib/healthCheck';
@@ -21,8 +25,13 @@ if (serveDevUi) {
 }
 
 app.use('/chat', chatRouter);
+app.use('/bookings', bookingsRouter);
 app.use('/data', dataRouter);
 app.use('/whatsapp', whatsappRouter);
+
+startRecoveryListener();
+startExpiredOffersJob();
+startNoShowsJob();
 
 app.get('/health', async (_req, res) => {
   try {

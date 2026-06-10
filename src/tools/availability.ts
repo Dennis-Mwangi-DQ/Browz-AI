@@ -11,6 +11,7 @@ const AvailabilityParams = z.object({
 });
 
 function mapSlot(row: Record<string, unknown>): TimeSlot {
+  const status = String(row.status ?? 'available') as TimeSlot['status'];
   return {
     id: String(row.id),
     branchId: String(row.branch_id),
@@ -18,7 +19,8 @@ function mapSlot(row: Record<string, unknown>): TimeSlot {
     artistId: row.artist_id ? String(row.artist_id) : null,
     startTime: String(row.start_time),
     endTime: String(row.end_time),
-    status: String(row.status ?? 'available') as TimeSlot['status'],
+    status,
+    isWalkin: status === 'open_for_walkin',
   };
 }
 
@@ -41,7 +43,7 @@ export async function queryAvailability(params: {
     let query = supabase
       .from('time_slots')
       .select('*')
-      .eq('status', 'available')
+      .in('status', ['available', 'open_for_walkin'])
       .eq('service_id', params.serviceId)
       .eq('branch_id', params.branchId)
       .gte('start_time', `${params.date}T00:00:00.000Z`)

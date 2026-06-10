@@ -11,6 +11,14 @@ import { getContextSnapshot } from './agent-session';
 import { lookupFaq } from '../tools/faq';
 import { listServices, listBranchesForService, listArtistsForServiceAtBranch } from '../tools/services';
 import { submitScreening } from '../tools/screenings';
+import {
+  addToWaitlist,
+  cancelWaitlistEntry,
+  checkWaitlistStatus,
+  confirmSlotOffer,
+  declineSlotOffer,
+} from '../tools/waitlist';
+import { handleOfferDeclined } from './recoveryOrchestrator';
 import { findArtistByName, findBranchByName, findServiceByName, getDefaultBranch } from '../lib/catalog';
 import { resolveBookingDate } from '../lib/dates';
 import type { ScreeningAnswers, SessionContext } from '../types';
@@ -29,6 +37,10 @@ async function resolveBranchName(branch?: string) {
     return getDefaultBranch();
   }
   return findBranchByName(branch);
+}
+
+function snapshotLastWaitlistRef(session: SessionContext): string | undefined {
+  return getContextSnapshot(session).lastWaitlistRef;
 }
 
 async function executeToolImpl(
@@ -167,6 +179,8 @@ async function executeToolImpl(
         };
       }
 
+      const bookingSource = matchingSlot.isWalkin ? 'walkin_agent' : 'ai_concierge';
+
       const booking = await createBooking({
         clientId: session.clientId,
         visitorName: session.clientId ? undefined : visitorName,
@@ -181,6 +195,7 @@ async function executeToolImpl(
           | 'single'
           | 'consultation'
           | 'package_first_session',
+        bookingSource,
       });
 
       if (!booking.success || !booking.data) {
@@ -389,6 +404,113 @@ async function executeToolImpl(
         error: result.gateCleared ? undefined : result.reason,
       };
     }
+    case 'add_to_waitlist': {
+      const service = await resolveServiceName(String(safeArgs.service ?? ''));
+      const branch = await resolveBranchName(String(safeArgs.branch ?? ''));
+      if (!service) {
+        return { success: false, error: 'service_not_found' };
+      }
+      if (!branch) {
+        return { success: false, error: 'branch_not_found' };
+      }
+      const resolvedDate = resolveBookingDate(safeArgs.preferredDate);
+      if (!resolvedDate.ok) {
+        return { success: false, error: resolvedDate.error };
+      }
+      const snapshot = getContextSnapshot(session);
+      const visitorContact =
+        (typeof safeArgs.visitorContact === 'string' && safeArgs.visitorContact.trim()) ||
+        session.whatsappNumber ||
+        snapshot.visitorContact;
+      const visitorName =
+        (typeof safeArgs.visitorName === 'string' && safeArgs.visitorName.trim()) ||
+        snapshot.visitorName;
+      if (!visitorContact) {
+        return { success: false, error: 'visitor_contact_required' };
+      }
+      const artistName = safeArgs.preferredArtist ? String(safeArgs.preferredArtist) : undefined;
+      const artist = artistName ? await findArtistByName(artistName, branch.id) : null;
+      const result = await addToWaitlist({
+        serviceId: service.id,
+        branchId: branch.id,
+        preferredDate: resolvedDate.date,
+        preferredTimeStart: safeArgs.preferredTimeStart
+          ? String(safeArgs.preferredTimeStart)
+          : undefined,
+        preferredTimeEnd: safeArgs.preferredTimeEnd
+          ? String(safeArgs.preferredTimeEnd)
+          : undefined,
+        clientId: session.clientId,
+        visitorName: visitorName ?? undefined,
+        visitorContact,
+        preferredArtistId: artist?.id,
+      });
+      if (!result.success || !result.data) {
+        return { success: false, error: result.error };
+      }
+      return {
+        success: true,
+        data: {
+          waitlistRef: result.data.waitlistRef,
+          service: service.name,
+          branch: branch.name,
+          preferredDate: resolvedDate.date,
+          preferredTimeStart: safeArgs.preferredTimeStart ?? null,
+          preferredTimeEnd: safeArgs.preferredTimeEnd ?? null,
+        },
+      };
+    }
+    case 'check_waitlist_status': {
+      const waitlistRef = safeArgs.waitlistRef ? String(safeArgs.waitlistRef) : undefined;
+      const snapshot = getContextSnapshot(session);
+      const visitorContact =
+        (typeof safeArgs.visitorContact === 'string' && safeArgs.visitorContact.trim()) ||
+        session.whatsappNumber ||
+        snapshot.visitorContact;
+      const result = await checkWaitlistStatus({ waitlistRef, visitorContact });
+      return { success: result.success, data: result.data, error: result.error };
+    }
+    case 'cancel_waitlist_entry': {
+      const waitlistRef = String(safeArgs.waitlistRef ?? snapshotLastWaitlistRef(session));
+      if (!waitlistRef) {
+        return { success: false, error: 'waitlist_ref_required' };
+      }
+      const result = await cancelWaitlistEntry(waitlistRef);
+      return { success: result.success, data: result.data, error: result.error };
+    }
+    case 'confirm_slot_offer': {
+      const waitlistRef = String(safeArgs.waitlistRef ?? snapshotLastWaitlistRef(session) ?? '');
+      if (!waitlistRef) {
+        return { success: false, error: 'waitlist_ref_required' };
+      }
+      const gateServiceId = safeArgs.service
+        ? (await resolveServiceName(String(safeArgs.service)))?.id
+        : undefined;
+      if (gateServiceId) {
+        const gate = await checkPreBookingRequirements(gateServiceId, session.clientId);
+        if (!gate.gateCleared) {
+          return { success: false, error: 'gate_blocked', reason: gate.reason };
+        }
+      }
+      const result = await confirmSlotOffer({
+        waitlistRef,
+        slotId: safeArgs.slotId ? String(safeArgs.slotId) : undefined,
+        clientId: session.clientId,
+        channel: session.channel,
+      });
+      return { success: result.success, data: result.data, error: result.error };
+    }
+    case 'decline_slot_offer': {
+      const waitlistRef = String(safeArgs.waitlistRef ?? snapshotLastWaitlistRef(session) ?? '');
+      if (!waitlistRef) {
+        return { success: false, error: 'waitlist_ref_required' };
+      }
+      const result = await declineSlotOffer(waitlistRef);
+      if (result.success && result.data?.slotId) {
+        void handleOfferDeclined(waitlistRef, result.data.slotId);
+      }
+      return { success: result.success, data: result.data, error: result.error };
+    }
     default:
       return { success: false, error: `unknown_tool:${name}` };
   }
@@ -525,6 +647,64 @@ export function createSessionTools(session: SessionContext) {
 
   const checkPreBookingRequirementsImpl = async ({ service }: { service: string }) =>
     executeToolImpl('check_pre_booking_requirements', { service }, session);
+
+  const addToWaitlistImpl = async ({
+    service,
+    branch,
+    preferredDate,
+    preferredTimeStart,
+    preferredTimeEnd,
+    visitorName,
+    visitorContact,
+    preferredArtist,
+  }: {
+    service: string;
+    branch?: string;
+    preferredDate?: string;
+    preferredTimeStart?: string;
+    preferredTimeEnd?: string;
+    visitorName?: string;
+    visitorContact?: string;
+    preferredArtist?: string;
+  }) =>
+    executeToolImpl(
+      'add_to_waitlist',
+      {
+        service,
+        branch,
+        preferredDate,
+        preferredTimeStart,
+        preferredTimeEnd,
+        visitorName,
+        visitorContact,
+        preferredArtist,
+      },
+      session,
+    );
+
+  const checkWaitlistStatusImpl = async ({
+    waitlistRef,
+    visitorContact,
+  }: {
+    waitlistRef?: string;
+    visitorContact?: string;
+  }) => executeToolImpl('check_waitlist_status', { waitlistRef, visitorContact }, session);
+
+  const cancelWaitlistEntryImpl = async ({ waitlistRef }: { waitlistRef?: string }) =>
+    executeToolImpl('cancel_waitlist_entry', { waitlistRef }, session);
+
+  const confirmSlotOfferImpl = async ({
+    waitlistRef,
+    slotId,
+    service,
+  }: {
+    waitlistRef?: string;
+    slotId?: string;
+    service?: string;
+  }) => executeToolImpl('confirm_slot_offer', { waitlistRef, slotId, service }, session);
+
+  const declineSlotOfferImpl = async ({ waitlistRef }: { waitlistRef?: string }) =>
+    executeToolImpl('decline_slot_offer', { waitlistRef }, session);
 
   const listBranchesForServiceTool = tool(listBranchesForServiceImpl, {
     name: 'list_branches_for_service',
@@ -694,6 +874,58 @@ export function createSessionTools(session: SessionContext) {
     }),
   });
 
+  const addToWaitlistTool = tool(addToWaitlistImpl, {
+    name: 'add_to_waitlist',
+    description:
+      'Add a client or visitor to the waitlist when no slots are available. Collect contact details for visitors.',
+    schema: z.object({
+      service: z.string().describe('Treatment name'),
+      branch: z.string().optional().describe('Branch or city name'),
+      preferredDate: z.string().optional().describe('Preferred ISO date YYYY-MM-DD'),
+      preferredTimeStart: z.string().optional().describe('Earliest preferred time HH:MM'),
+      preferredTimeEnd: z.string().optional().describe('Latest preferred time HH:MM'),
+      visitorName: z.string().optional().describe('Visitor full name'),
+      visitorContact: z.string().optional().describe('Visitor phone or email'),
+      preferredArtist: z.string().optional().describe('Preferred artist name'),
+    }),
+  });
+
+  const checkWaitlistStatusTool = tool(checkWaitlistStatusImpl, {
+    name: 'check_waitlist_status',
+    description: 'Check waitlist position or active slot offer for a reference or contact.',
+    schema: z.object({
+      waitlistRef: z.string().optional().describe('Waitlist reference e.g. WL-2026-00089'),
+      visitorContact: z.string().optional().describe('Contact used when joining waitlist'),
+    }),
+  });
+
+  const cancelWaitlistEntryTool = tool(cancelWaitlistEntryImpl, {
+    name: 'cancel_waitlist_entry',
+    description: 'Remove an entry from the waitlist.',
+    schema: z.object({
+      waitlistRef: z.string().optional().describe('Waitlist reference to cancel'),
+    }),
+  });
+
+  const confirmSlotOfferTool = tool(confirmSlotOfferImpl, {
+    name: 'confirm_slot_offer',
+    description:
+      'Accept a waitlist slot offer. Run check_pre_booking_requirements first for T2/T3 services.',
+    schema: z.object({
+      waitlistRef: z.string().optional().describe('Waitlist reference with active offer'),
+      slotId: z.string().optional().describe('Offered slot ID'),
+      service: z.string().optional().describe('Service name for gate check'),
+    }),
+  });
+
+  const declineSlotOfferTool = tool(declineSlotOfferImpl, {
+    name: 'decline_slot_offer',
+    description: 'Decline a waitlist slot offer.',
+    schema: z.object({
+      waitlistRef: z.string().optional().describe('Waitlist reference with active offer'),
+    }),
+  });
+
   const allTools = [
     listBranchesForServiceTool,
     listArtistsForServiceAtBranchTool,
@@ -710,6 +942,11 @@ export function createSessionTools(session: SessionContext) {
     checkFrequencyTool,
     submitScreeningTool,
     checkPreBookingRequirementsTool,
+    addToWaitlistTool,
+    checkWaitlistStatusTool,
+    cancelWaitlistEntryTool,
+    confirmSlotOfferTool,
+    declineSlotOfferTool,
   ];
 
   const toolImplementations: Record<
@@ -740,6 +977,15 @@ export function createSessionTools(session: SessionContext) {
       checkPreBookingRequirementsImpl(
         args as Parameters<typeof checkPreBookingRequirementsImpl>[0],
       ),
+    add_to_waitlist: (args) => addToWaitlistImpl(args as Parameters<typeof addToWaitlistImpl>[0]),
+    check_waitlist_status: (args) =>
+      checkWaitlistStatusImpl(args as Parameters<typeof checkWaitlistStatusImpl>[0]),
+    cancel_waitlist_entry: (args) =>
+      cancelWaitlistEntryImpl(args as Parameters<typeof cancelWaitlistEntryImpl>[0]),
+    confirm_slot_offer: (args) =>
+      confirmSlotOfferImpl(args as Parameters<typeof confirmSlotOfferImpl>[0]),
+    decline_slot_offer: (args) =>
+      declineSlotOfferImpl(args as Parameters<typeof declineSlotOfferImpl>[0]),
   };
 
   return { allTools, toolImplementations };

@@ -56,6 +56,9 @@ const envSchema = z.object({
   TWILIO_WHATSAPP_NUMBER: z.string().optional(),
   SESSION_SECRET: z.string().optional(),
   STRIPE_TEST_MODE: z.string().optional(),
+  OFFER_WINDOW_MINUTES: z.coerce.number().default(15),
+  RECOVERY_JOB_INTERVAL_MS: z.coerce.number().default(300000),
+  WALKIN_SLOT_NOTIFY_LEAD_MIN: z.coerce.number().default(15),
 });
 
 export type Env = z.infer<typeof envSchema>;

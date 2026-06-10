@@ -2,10 +2,11 @@ import { z } from 'zod';
 import { supabase } from '../db/supabaseClient';
 import { resolvePaymentRule } from '../agent/paymentRules';
 import { getServiceById } from '../lib/catalog';
+import { emitBookingCancelled } from '../lib/events';
 import { generateSequenceId } from '../lib/ids';
 import { normalizePhoneNumber } from '../lib/phone';
 import { fail, ok } from '../lib/result';
-import type { PaymentRule, TimeSlot, ToolResult } from '../types';
+import type { BookingSource, PaymentRule, TimeSlot, ToolResult } from '../types';
 
 const CreateBookingParams = z.object({
   clientId: z.string().uuid().nullable(),
@@ -20,6 +21,10 @@ const CreateBookingParams = z.object({
   clearanceRef: z.string().optional(),
   channel: z.enum(['web', 'whatsapp']),
   bookingType: z.enum(['single', 'consultation', 'package_first_session']).optional(),
+  bookingSource: z
+    .enum(['ai_concierge', 'waitlist_recovery', 'walkin_agent', 'walkin_staff'])
+    .optional(),
+  waitlistRef: z.string().optional(),
 });
 
 const ModifyBookingParams = z.object({
@@ -87,7 +92,35 @@ async function fetchSlot(slotId: string): Promise<TimeSlot | null> {
     startTime: String(data.start_time),
     endTime: String(data.end_time),
     status: String(data.status) as TimeSlot['status'],
+    isWalkin: String(data.status) === 'open_for_walkin',
   };
+}
+
+async function isSlotBookable(
+  slot: TimeSlot,
+  bookingSource?: BookingSource,
+  waitlistRef?: string,
+): Promise<boolean> {
+  if (slot.status === 'available') {
+    return true;
+  }
+
+  if (slot.status === 'open_for_walkin') {
+    return bookingSource === 'walkin_agent' || bookingSource === 'walkin_staff';
+  }
+
+  if (slot.status === 'hold' && bookingSource === 'waitlist_recovery' && waitlistRef && supabase) {
+    const { data } = await supabase
+      .from('waitlist')
+      .select('id')
+      .eq('id', waitlistRef)
+      .eq('status', 'offered')
+      .eq('offered_slot_id', slot.id)
+      .maybeSingle();
+    return Boolean(data);
+  }
+
+  return false;
 }
 
 export async function createBooking(params: {
@@ -103,6 +136,8 @@ export async function createBooking(params: {
   clearanceRef?: string;
   channel: 'web' | 'whatsapp';
   bookingType?: 'single' | 'consultation' | 'package_first_session';
+  bookingSource?: BookingSource;
+  waitlistRef?: string;
 }): Promise<ToolResult<{ bookingId: string; paymentRule: PaymentRule }>> {
   const parsed = CreateBookingParams.safeParse(params);
   if (!parsed.success) {
@@ -116,7 +151,8 @@ export async function createBooking(params: {
     }
 
     const slot = await fetchSlot(params.slotId);
-    if (!slot || slot.status !== 'available') {
+    const bookingSource = params.bookingSource ?? 'ai_concierge';
+    if (!slot || !(await isSlotBookable(slot, bookingSource, params.waitlistRef))) {
       return fail('slot_unavailable');
     }
 
@@ -151,6 +187,7 @@ export async function createBooking(params: {
         clearance_ref: params.clearanceRef,
         consent_status: service.serviceTier === 'T3' ? 'pending' : 'not_required',
         channel: params.channel,
+        booking_source: bookingSource,
       });
 
       if (error) {
@@ -159,6 +196,15 @@ export async function createBooking(params: {
       }
 
       await supabase.from('time_slots').update({ status: 'booked' }).eq('id', params.slotId);
+    }
+
+    if (bookingSource === 'waitlist_recovery' || bookingSource === 'walkin_agent' || bookingSource === 'walkin_staff') {
+      const { completeRecovery } = await import('../agent/recoveryOrchestrator');
+      await completeRecovery(
+        params.slotId,
+        bookingSource === 'waitlist_recovery' ? 'waitlist_filled' : 'walkin_filled',
+        bookingId,
+      );
     }
 
     return ok({ bookingId, paymentRule });
@@ -224,7 +270,7 @@ export async function cancelBooking(params: {
     if (supabase) {
       const { data: booking } = await supabase
         .from('bookings')
-        .select('id, slot_id')
+        .select('id, slot_id, service_id, branch_id')
         .eq('id', params.bookingRef)
         .eq('client_id', params.clientId)
         .maybeSingle();
@@ -233,9 +279,40 @@ export async function cancelBooking(params: {
         return fail('booking_not_found');
       }
 
-      await supabase.from('bookings').update({ status: 'cancelled', updated_at: new Date().toISOString() }).eq('id', params.bookingRef);
+      let slotStartTime = new Date().toISOString();
+      let serviceId = String(booking.service_id);
+      let branchId = String(booking.branch_id);
+
       if (booking.slot_id) {
+        const { data: slot } = await supabase
+          .from('time_slots')
+          .select('id, service_id, branch_id, start_time')
+          .eq('id', booking.slot_id)
+          .maybeSingle();
+
+        if (slot) {
+          slotStartTime = String(slot.start_time);
+          serviceId = String(slot.service_id);
+          branchId = String(slot.branch_id);
+        }
+
         await supabase.from('time_slots').update({ status: 'available' }).eq('id', booking.slot_id);
+      }
+
+      await supabase
+        .from('bookings')
+        .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+        .eq('id', params.bookingRef);
+
+      if (booking.slot_id) {
+        emitBookingCancelled({
+          bookingId: params.bookingRef,
+          slotId: String(booking.slot_id),
+          serviceId,
+          branchId,
+          startTime: slotStartTime,
+          cancellationSource: 'agent',
+        });
       }
     }
 

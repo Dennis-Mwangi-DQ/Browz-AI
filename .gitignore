@@ -11,3 +11,6 @@ yarn-error.log*
 
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md
+Browz_CancellationRecovery_Spec.md
+Browz_NoShowReduction_Spec.md
+Browz_BookingConcierge_AI_DeepPrototype_Spec.md

@@ -148,6 +148,24 @@ function mapArtist(row: Record<string, unknown>): Artist {
   };
 }
 
+export async function getArtistById(artistId: string): Promise<Artist | null> {
+  if (!supabase) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from('artists')
+    .select('*')
+    .eq('id', artistId)
+    .maybeSingle();
+
+  if (error || !data) {
+    return null;
+  }
+
+  return mapArtist(data);
+}
+
 export async function findArtistByName(name?: string, branchId?: string): Promise<Artist | null> {
   if (!name || !supabase) {
     return null;

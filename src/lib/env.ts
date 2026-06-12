@@ -12,7 +12,7 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   CORS_ORIGIN: z.string().default('*'),
   LLM_PROVIDER: z
-    .enum(['ollama', 'openai', 'anthropic', 'openrouter'])
+    .enum(['ollama', 'openai', 'anthropic', 'openrouter', 'deepseek'])
     .default('ollama'),
   OPENROUTER_API_KEY: z.string().optional(),
   OPENROUTER_MODEL: z.string().default('qwen/qwen3.5-397b-a17b'),
@@ -36,6 +36,12 @@ const envSchema = z.object({
   OLLAMA_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().default('gpt-4o'),
   ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-20250514'),
+  DEEPSEEK_API_KEY: z.string().optional(),
+  DEEPSEEK_MODEL: z.string().default('deepseek-v4-flash'),
+  DEEPSEEK_BASE_URL: z
+    .string()
+    .url()
+    .default('https://api.deepseek.com'),
   AGENT_MAX_TOOL_ITERATIONS: z.coerce.number().default(5),
   AGENT_MAX_TOKENS: z.coerce.number().default(2048),
   AGENT_TEMPERATURE: z.coerce.number().default(0.1),
@@ -117,6 +123,8 @@ export function isLlmEnabled(): boolean {
       return Boolean(env.ANTHROPIC_API_KEY);
     case 'openrouter':
       return Boolean(env.OPENROUTER_API_KEY);
+    case 'deepseek':
+      return Boolean(env.DEEPSEEK_API_KEY);
     default:
       return false;
   }

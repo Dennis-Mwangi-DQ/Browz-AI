@@ -37,7 +37,14 @@ Your job is to help users book appointments, check availability, and answer salo
 12. If gates block a booking, explain the next step (consultation, patch test, or medical screening).
 13. Never invent or guess dates. Only pass dates the user stated or relative terms you converted using the date context below.
 14. For visitors (not authenticated clients), collect full name and contact number before create_booking and pass them as visitorName and visitorContact.
-15. Provide concise, helpful answers using the data returned from tools only.`;
+15. Provide concise, helpful answers using the data returned from tools only.
+
+**Response formatting rules:**
+16. Do not use emojis or decorative symbols in any response.
+17. Use clean Markdown that renders well in chat: short paragraphs, simple bullets, and simple tables only when they make comparison easier.
+18. Do not use icon-prefixed headings like "🚫 Medical Screening Required" or "⏰ Availability"; write plain headings like "Medical Screening Required" and "Availability".
+19. Avoid horizontal rules, oversized heading stacks, and dense tables for short lists. Prefer bullets for 2-6 options.
+20. End with one clear next step or question.`;
 
 function buildDateContext(): string {
   const today = startOfTodayUtc();
@@ -110,6 +117,16 @@ function extractResponseText(content: AIMessage['content']): string {
   return JSON.stringify(content);
 }
 
+function sanitizeAssistantResponse(text: string): string {
+  return text
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]\u{FE0F}?/gu, '')
+    .replace(/\uFE0F/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export async function runAgent(params: {
   message: string;
   sessionId?: string;
@@ -128,7 +145,7 @@ export async function runAgent(params: {
   if (!isAgentLlmEnabled()) {
     return {
       response:
-        'LLM is not configured. Set LLM_PROVIDER and the required credentials (e.g. OLLAMA_API_URL for local Ollama) and try again.',
+        'LLM is not configured. Set LLM_PROVIDER and the required credentials for that provider, then try again.',
       sessionId: params.sessionId ?? 'unknown',
       toolCalls: [],
       toolResults: [],
@@ -176,7 +193,7 @@ export async function runAgent(params: {
 
     const toolCalls = response.tool_calls;
     if (!toolCalls || toolCalls.length === 0) {
-      const responseText = extractResponseText(response.content);
+      const responseText = sanitizeAssistantResponse(extractResponseText(response.content));
 
       await appendTurn(activeSession.sessionId, {
         role: 'user',

@@ -3,9 +3,12 @@ import cors from 'cors';
 import express from 'express';
 import { chatRouter } from './routes/chat';
 import { dataRouter } from './routes/data';
+import { paymentsRouter } from './routes/payments';
+import { staffRouter } from './routes/staff';
 import { whatsappRouter } from './routes/whatsapp';
 import { getHealthStatus } from './lib/healthCheck';
 import { getEnv } from './lib/env';
+import { startScheduledJobs } from './jobs/scheduler';
 import path from 'path';
 
 const app = express();
@@ -22,6 +25,9 @@ if (serveDevUi) {
 
 app.use('/chat', chatRouter);
 app.use('/data', dataRouter);
+app.use('/payments', paymentsRouter);
+app.use('/staff', staffRouter);
+app.use('/', staffRouter);
 app.use('/whatsapp', whatsappRouter);
 
 app.get('/health', async (_req, res) => {
@@ -45,6 +51,9 @@ app.get('/', (_req, res) => {
       health: 'GET /health',
       chat: 'POST /chat',
       whatsapp: 'POST /whatsapp',
+      paymentComplete: 'POST /payments/complete',
+      staffCheckIn: 'PATCH /bookings/:id/check-in',
+      staffNoShowFlag: 'PATCH /clients/:id/no-show-flag',
       services: 'GET /data/services',
       branches: 'GET /data/branches',
       availability: 'GET /data/availability?serviceId=&branchId=&date=',
@@ -57,4 +66,5 @@ const port = Number(process.env.PORT ?? 3000);
 app.listen(port, () => {
   const mode = serveDevUi ? 'development (UI enabled)' : 'production (API only)';
   console.log(`Browz agent backend running on port ${port} [${mode}]`);
+  startScheduledJobs();
 });

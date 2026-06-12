@@ -5,6 +5,12 @@ import { createBooking, modifyBooking, cancelBooking } from '../tools/bookings';
 import { queryAvailability } from '../tools/availability';
 import { createConsultation } from '../tools/consultations';
 import { getClearanceStatus } from '../tools/clearances';
+import {
+  confirmAppointment,
+  getNoShowFlag,
+  recordNoShow,
+  resolveDepositRule as resolveNoShowDepositRule,
+} from '../tools/noShow';
 import { addNotes } from '../tools/notes';
 import { generatePaymentLink } from '../tools/payment';
 import { getContextSnapshot } from './agent-session';
@@ -360,6 +366,51 @@ async function executeToolImpl(
       const result = await checkTreatmentFrequency(session.clientId, service.id);
       return { success: true, data: result };
     }
+    case 'confirm_appointment': {
+      const bookingRef = String(safeArgs.bookingReference ?? safeArgs.bookingRef ?? session.lastBookingRef ?? '');
+      if (!bookingRef) {
+        return { success: false, error: 'booking_reference_required' };
+      }
+      const result = await confirmAppointment({
+        bookingRef,
+        clientId: session.clientId,
+        visitorContact: session.whatsappNumber ?? session.agentContext?.visitorContact,
+      });
+      return { success: result.success, data: result.data, error: result.error };
+    }
+    case 'get_no_show_flag': {
+      const clientId = String(safeArgs.clientId ?? session.clientId ?? '');
+      if (!clientId) {
+        return { success: false, error: 'client_required' };
+      }
+      const result = await getNoShowFlag(clientId);
+      return { success: result.success, data: result.data, error: result.error };
+    }
+    case 'record_no_show': {
+      const bookingId = String(safeArgs.bookingId ?? safeArgs.bookingReference ?? '');
+      if (!bookingId) {
+        return { success: false, error: 'booking_reference_required' };
+      }
+      const result = await recordNoShow({ bookingId });
+      return { success: result.success, data: result.data, error: result.error };
+    }
+    case 'resolve_deposit_rule': {
+      const serviceIdArg = safeArgs.serviceId ? String(safeArgs.serviceId) : '';
+      const service = serviceIdArg ? null : await resolveServiceName(String(safeArgs.service ?? ''));
+      const serviceId = serviceIdArg || service?.id;
+      if (!serviceId) {
+        return { success: false, error: 'service_not_found' };
+      }
+      const result = await resolveNoShowDepositRule({
+        serviceId,
+        bookingType: String(safeArgs.bookingType ?? 'single') as
+          | 'single'
+          | 'consultation'
+          | 'package_first_session',
+        clientId: session.clientId,
+      });
+      return { success: result.success, data: result.data, error: result.error };
+    }
     case 'submit_screening': {
       const service = await resolveServiceName(String(safeArgs.service ?? ''));
       if (!service) {
@@ -514,6 +565,33 @@ export function createSessionTools(session: SessionContext) {
 
   const checkFrequencyImpl = async ({ service }: { service: string }) =>
     executeToolImpl('check_frequency', { service }, session);
+
+  const confirmAppointmentImpl = async ({
+    bookingReference,
+  }: {
+    bookingReference?: string;
+  }) => executeToolImpl('confirm_appointment', { bookingReference }, session);
+
+  const getNoShowFlagImpl = async ({ clientId }: { clientId?: string }) =>
+    executeToolImpl('get_no_show_flag', { clientId }, session);
+
+  const recordNoShowImpl = async ({
+    bookingId,
+    bookingReference,
+  }: {
+    bookingId?: string;
+    bookingReference?: string;
+  }) => executeToolImpl('record_no_show', { bookingId, bookingReference }, session);
+
+  const resolveDepositRuleImpl = async ({
+    service,
+    serviceId,
+    bookingType,
+  }: {
+    service?: string;
+    serviceId?: string;
+    bookingType?: string;
+  }) => executeToolImpl('resolve_deposit_rule', { service, serviceId, bookingType }, session);
 
   const submitScreeningImpl = async ({
     service,
@@ -673,6 +751,48 @@ export function createSessionTools(session: SessionContext) {
     }),
   });
 
+  const confirmAppointmentTool = tool(confirmAppointmentImpl, {
+    name: 'confirm_appointment',
+    description:
+      'Confirm that the client will attend a pending appointment reconfirmation. Use for explicit confirmation messages about an appointment.',
+    schema: z.object({
+      bookingReference: z.string().optional().describe('Booking reference if the user provided one'),
+    }),
+  });
+
+  const getNoShowFlagTool = tool(getNoShowFlagImpl, {
+    name: 'get_no_show_flag',
+    description:
+      'Return the client no-show flag and no-show count. Use only for internal policy checks, not for client-facing explanations.',
+    schema: z.object({
+      clientId: z.string().optional().describe('Client UUID; omit to use the active session client'),
+    }),
+  });
+
+  const recordNoShowTool = tool(recordNoShowImpl, {
+    name: 'record_no_show',
+    description:
+      'Record a missed appointment as a no-show, increment counters, and apply no-show flag policy.',
+    schema: z.object({
+      bookingId: z.string().optional().describe('Booking reference'),
+      bookingReference: z.string().optional().describe('Booking reference'),
+    }),
+  });
+
+  const resolveDepositRuleTool = tool(resolveDepositRuleImpl, {
+    name: 'resolve_deposit_rule',
+    description:
+      'Resolve the current deposit or upfront-payment rule for a service and the active client, including no-show flag policy.',
+    schema: z.object({
+      service: z.string().optional().describe('Treatment name'),
+      serviceId: z.string().optional().describe('Service ID'),
+      bookingType: z
+        .string()
+        .optional()
+        .describe('Booking type: single, consultation, or package_first_session'),
+    }),
+  });
+
   const submitScreeningTool = tool(submitScreeningImpl, {
     name: 'submit_screening',
     description:
@@ -708,6 +828,10 @@ export function createSessionTools(session: SessionContext) {
     bookConsultationTool,
     checkClearanceStatusTool,
     checkFrequencyTool,
+    confirmAppointmentTool,
+    getNoShowFlagTool,
+    recordNoShowTool,
+    resolveDepositRuleTool,
     submitScreeningTool,
     checkPreBookingRequirementsTool,
   ];
@@ -734,6 +858,14 @@ export function createSessionTools(session: SessionContext) {
     check_clearance_status: (args) =>
       checkClearanceStatusImpl(args as Parameters<typeof checkClearanceStatusImpl>[0]),
     check_frequency: (args) => checkFrequencyImpl(args as Parameters<typeof checkFrequencyImpl>[0]),
+    confirm_appointment: (args) =>
+      confirmAppointmentImpl(args as Parameters<typeof confirmAppointmentImpl>[0]),
+    get_no_show_flag: (args) =>
+      getNoShowFlagImpl(args as Parameters<typeof getNoShowFlagImpl>[0]),
+    record_no_show: (args) =>
+      recordNoShowImpl(args as Parameters<typeof recordNoShowImpl>[0]),
+    resolve_deposit_rule: (args) =>
+      resolveDepositRuleImpl(args as Parameters<typeof resolveDepositRuleImpl>[0]),
     submit_screening: (args) =>
       submitScreeningImpl(args as Parameters<typeof submitScreeningImpl>[0]),
     check_pre_booking_requirements: (args) =>

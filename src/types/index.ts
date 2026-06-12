@@ -3,8 +3,30 @@ import { z } from 'zod';
 export const ServiceTier = z.enum(['T1', 'T2', 'T3']);
 export const UserTier = z.enum(['visitor', 'client']);
 export const Channel = z.enum(['web', 'whatsapp']);
-export const BookingStatus = z.enum(['confirmed', 'modified', 'cancelled', 'pending_payment', 'completed']);
+export const BookingStatus = z.enum([
+  'confirmed',
+  'modified',
+  'cancelled',
+  'pending_payment',
+  'completed',
+  'no_show_risk',
+  'no_show',
+]);
 export const PaymentType = z.enum(['full_upfront', 'deposit', 'package', 'free']);
+export const PaymentStatus = z.enum([
+  'unpaid',
+  'link_sent',
+  'deposit_paid',
+  'paid',
+  'forfeited',
+]);
+export const ReconfirmationStatus = z.enum([
+  'pending',
+  'confirmed',
+  'no_response',
+  'not_required',
+]);
+export const NoShowFlagStatus = z.enum(['none', 'active', 'lifted']);
 export const ScreeningStatus = z.enum(['PENDING', 'APPROVED', 'FLAGGED', 'EXPIRED', 'DECLINED', 'NEEDS_INFO']);
 
 export const IntentId = z.enum([
@@ -20,6 +42,9 @@ export const IntentId = z.enum([
   'book_consultation',
   'check_clearance_status',
   'check_frequency',
+  'confirm_appointment',
+  'query_deposit_policy',
+  'query_cancellation_policy',
 ]);
 export type IntentId = z.infer<typeof IntentId>;
 
@@ -177,6 +202,23 @@ export interface PaymentRule {
   paymentType: 'full_upfront' | 'deposit' | 'package' | 'free';
   depositAmountAed: number;
   balanceDueAed: number;
+  depositPercent?: number;
+  reason?:
+    | 'no_show_flag'
+    | 'consultation'
+    | 'package'
+    | 't1_mid_value_20_percent'
+    | 't1_high_value_20_percent'
+    | 't2_30_percent'
+    | 't3_high_value_30_percent'
+    | 'full_upfront_threshold';
+}
+
+export interface NoShowFlag {
+  status: z.infer<typeof NoShowFlagStatus>;
+  noShowCount: number;
+  setAt?: string | null;
+  liftedAt?: string | null;
 }
 
 export interface BookingRecord {

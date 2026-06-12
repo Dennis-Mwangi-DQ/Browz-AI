@@ -5,6 +5,8 @@ import { getServiceById } from '../lib/catalog';
 import { generateSequenceId } from '../lib/ids';
 import { normalizePhoneNumber } from '../lib/phone';
 import { fail, ok } from '../lib/result';
+import { generatePaymentLink } from './payment';
+import { getClientNoShowFlag } from './noShow';
 import type { PaymentRule, TimeSlot, ToolResult } from '../types';
 
 const CreateBookingParams = z.object({
@@ -128,7 +130,9 @@ export async function createBooking(params: {
     }
 
     const bookingId = generateSequenceId('BRZ', yearPart(), await nextBookingSequence(), 5);
-    const paymentRule = resolvePaymentRule(service, params.bookingType ?? 'single');
+    const noShowFlag = await getClientNoShowFlag(params.clientId);
+    const paymentRule = resolvePaymentRule(service, params.bookingType ?? 'single', noShowFlag);
+    const requiresPayment = paymentRule.paymentType !== 'free';
 
     if (supabase) {
       const { error } = await supabase.from('bookings').insert({
@@ -140,13 +144,13 @@ export async function createBooking(params: {
         branch_id: params.branchId,
         slot_id: params.slotId,
         artist_id: params.artistId,
-        status: 'confirmed',
+        status: requiresPayment ? 'pending_payment' : 'confirmed',
         notes: params.notes,
         booking_type: params.bookingType ?? 'single',
         payment_type: paymentRule.paymentType,
         deposit_amount_aed: paymentRule.depositAmountAed,
         balance_due_aed: paymentRule.balanceDueAed,
-        payment_status: paymentRule.paymentType === 'free' ? 'paid' : 'unpaid',
+        payment_status: requiresPayment ? 'unpaid' : 'paid',
         screening_ref: params.screeningRef,
         clearance_ref: params.clearanceRef,
         consent_status: service.serviceTier === 'T3' ? 'pending' : 'not_required',
@@ -159,6 +163,19 @@ export async function createBooking(params: {
       }
 
       await supabase.from('time_slots').update({ status: 'booked' }).eq('id', params.slotId);
+
+      if (requiresPayment) {
+        const paymentLink = await generatePaymentLink({
+          bookingRef: bookingId,
+          amountAed: paymentRule.depositAmountAed,
+          paymentType: paymentRule.paymentType as 'full_upfront' | 'deposit' | 'package',
+          description: `${service.name} booking ${bookingId}`,
+        });
+
+        if (!paymentLink.success) {
+          return fail(paymentLink.error ?? 'payment_link_failed');
+        }
+      }
     }
 
     return ok({ bookingId, paymentRule });

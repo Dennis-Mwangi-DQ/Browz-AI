@@ -99,6 +99,11 @@ CREATE TABLE clients (
   preferences text,
   skin_notes text,
   allergies text[],
+  no_show_count integer DEFAULT 0,
+  no_show_flag text DEFAULT 'none'
+    CHECK (no_show_flag IN ('none', 'active', 'lifted')),
+  no_show_flag_set_at timestamptz,
+  no_show_flag_lifted_at timestamptz,
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now()
 );
@@ -129,7 +134,7 @@ CREATE TABLE bookings (
   slot_id uuid REFERENCES time_slots(id),
   artist_id text REFERENCES artists(id) NULL,
   status text DEFAULT 'confirmed'
-    CHECK (status IN ('confirmed','modified','cancelled','pending_payment','completed')),
+    CHECK (status IN ('confirmed','modified','cancelled','pending_payment','completed','no_show_risk','no_show')),
   notes text,
   booking_type text DEFAULT 'single'
     CHECK (booking_type IN ('single','consultation','package_first_session')),
@@ -138,8 +143,16 @@ CREATE TABLE bookings (
   deposit_amount_aed numeric(8,2) DEFAULT 0,
   balance_due_aed numeric(8,2) DEFAULT 0,
   payment_status text DEFAULT 'unpaid'
-    CHECK (payment_status IN ('unpaid','link_sent','deposit_paid','paid')),
+    CHECK (payment_status IN ('unpaid','link_sent','deposit_paid','paid','forfeited')),
   payment_link text,
+  reconfirmation_status text DEFAULT 'pending'
+    CHECK (reconfirmation_status IN ('pending','confirmed','no_response','not_required')),
+  reconfirmation_sent_at timestamptz,
+  reconfirmation_deadline timestamptz,
+  reconfirmed_at timestamptz,
+  check_in_recorded boolean DEFAULT false,
+  check_in_at timestamptz,
+  deposit_forfeited boolean DEFAULT false,
   screening_ref text,
   clearance_ref text,
   consent_status text DEFAULT 'not_required'
@@ -152,6 +165,43 @@ CREATE TABLE bookings (
 
 CREATE INDEX idx_bookings_client ON bookings(client_id);
 CREATE INDEX idx_bookings_status ON bookings(status);
+CREATE INDEX idx_bookings_reconfirmation_deadline ON bookings(reconfirmation_deadline);
+
+CREATE TABLE reminder_log (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  booking_id text REFERENCES bookings(id),
+  client_id uuid REFERENCES clients(id) NULL,
+  channel text CHECK (channel IN ('whatsapp', 'web', 'both')),
+  reminder_type text CHECK (reminder_type IN ('reminder', 'reconfirmation_nudge', 'no_show_followup')),
+  sent_at timestamptz NOT NULL,
+  delivered boolean DEFAULT false,
+  response text,
+  responded_at timestamptz,
+  created_at timestamptz DEFAULT now()
+);
+
+CREATE INDEX idx_reminder_log_booking ON reminder_log(booking_id);
+
+CREATE TABLE no_show_log (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  booking_id text REFERENCES bookings(id),
+  client_id uuid REFERENCES clients(id) NULL,
+  visitor_contact text,
+  service_id text REFERENCES services(id),
+  branch_id text REFERENCES branches(id),
+  appointment_time timestamptz NOT NULL,
+  reconfirmation_status text,
+  deposit_amount_aed numeric(8,2) DEFAULT 0,
+  deposit_forfeited boolean DEFAULT false,
+  flag_triggered boolean DEFAULT false,
+  no_show_count_at_event integer,
+  follow_up_sent boolean DEFAULT false,
+  follow_up_sent_at timestamptz,
+  created_at timestamptz DEFAULT now()
+);
+
+CREATE INDEX idx_no_show_log_client ON no_show_log(client_id);
+CREATE INDEX idx_no_show_log_booking ON no_show_log(booking_id);
 
 CREATE TABLE spmu_clearances (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

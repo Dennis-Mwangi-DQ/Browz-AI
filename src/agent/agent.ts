@@ -14,6 +14,7 @@ import { getEnv } from '../lib/env';
 import { createAgentLlm, isAgentLlmEnabled } from '../lib/llmClient';
 import { addDays, startOfTodayUtc, toIsoDate } from '../lib/dates';
 import { appendTurn, getOrCreateSession, resolveUserIdentity, updateSession } from '../memory/sessionManager';
+import { getClientNoShowFlag, handleReconfirmationReply } from '../tools/noShow';
 import type { SessionContext } from '../types';
 
 const SYSTEM_PROMPT = `You are a Browz booking concierge assistant for a beauty salon in the UAE.
@@ -37,7 +38,9 @@ Your job is to help users book appointments, check availability, and answer salo
 12. If gates block a booking, explain the next step (consultation, patch test, or medical screening).
 13. Never invent or guess dates. Only pass dates the user stated or relative terms you converted using the date context below.
 14. For visitors (not authenticated clients), collect full name and contact number before create_booking and pass them as visitorName and visitorContact.
-15. Provide concise, helpful answers using the data returned from tools only.`;
+15. For deposit and cancellation policy questions, answer from Browz policy and use resolve_deposit_rule when service-specific payment rules are needed.
+16. If a client asks why full upfront payment is required for their account, do not mention no-show flags. Say: "Full upfront payment is currently required for your account. If you have questions about this, our team can help - would you like me to connect you with reception?"
+17. Provide concise, helpful answers using the data returned from tools only.`;
 
 function buildDateContext(): string {
   const today = startOfTodayUtc();
@@ -125,16 +128,6 @@ export async function runAgent(params: {
   toolCalls: { name: string; args: Record<string, unknown> }[];
   toolResults: { name: string; result: unknown }[];
 }> {
-  if (!isAgentLlmEnabled()) {
-    return {
-      response:
-        'LLM is not configured. Set LLM_PROVIDER and the required credentials (e.g. OLLAMA_API_URL for local Ollama) and try again.',
-      sessionId: params.sessionId ?? 'unknown',
-      toolCalls: [],
-      toolResults: [],
-    };
-  }
-
   const identity = await resolveUserIdentity(params.authToken, params.whatsappNumber);
   const resolvedClientId = params.clientId ?? identity.clientId;
   const session = await getOrCreateSession(
@@ -159,6 +152,72 @@ export async function runAgent(params: {
   });
 
   const activeSession = enrichedSession ?? session;
+
+  const reconfirmation = await handleReconfirmationReply({
+    message: params.message,
+    session: activeSession,
+  });
+  if (reconfirmation.handled && reconfirmation.response) {
+    await appendTurn(activeSession.sessionId, {
+      role: 'user',
+      content: params.message,
+      timestamp: new Date().toISOString(),
+    });
+    await appendTurn(activeSession.sessionId, {
+      role: 'agent',
+      content: reconfirmation.response,
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      response: reconfirmation.response,
+      sessionId: activeSession.sessionId,
+      toolCalls: [],
+      toolResults: [],
+    };
+  }
+
+  const lowerMessage = params.message.toLowerCase();
+  const asksWhyFullPayment =
+    lowerMessage.includes('why') &&
+    (lowerMessage.includes('full payment') ||
+      lowerMessage.includes('full upfront') ||
+      lowerMessage.includes('pay upfront'));
+  if (asksWhyFullPayment && activeSession.clientId) {
+    const flag = await getClientNoShowFlag(activeSession.clientId);
+    if (flag?.status === 'active') {
+      const response =
+        'Full upfront payment is currently required for your account. If you have questions about this, our team can help - would you like me to connect you with reception?';
+      await appendTurn(activeSession.sessionId, {
+        role: 'user',
+        content: params.message,
+        timestamp: new Date().toISOString(),
+      });
+      await appendTurn(activeSession.sessionId, {
+        role: 'agent',
+        content: response,
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        response,
+        sessionId: activeSession.sessionId,
+        toolCalls: [],
+        toolResults: [],
+      };
+    }
+  }
+
+  if (!isAgentLlmEnabled()) {
+    return {
+      response:
+        'LLM is not configured. Set LLM_PROVIDER and the required credentials (e.g. OLLAMA_API_URL for local Ollama) and try again.',
+      sessionId: activeSession.sessionId,
+      toolCalls: [],
+      toolResults: [],
+    };
+  }
+
   const { allTools, toolImplementations } = createSessionTools(activeSession);
   const llm = createAgentLlm();
   if (!llm.bindTools) {

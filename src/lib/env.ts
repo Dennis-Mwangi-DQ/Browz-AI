@@ -51,11 +51,24 @@ const envSchema = z.object({
   TWILIO_AUTH_TOKEN: z.string().optional(),
   TWILIO_ACCOUNT_SID: z.string().optional(),
   STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
   ESCALATION_WEBHOOK_URL: z.string().optional(),
   DEFAULT_BRANCH_ID: z.string().optional(),
   TWILIO_WHATSAPP_NUMBER: z.string().optional(),
   SESSION_SECRET: z.string().optional(),
   STRIPE_TEST_MODE: z.string().optional(),
+  NO_SHOW_FLAG_THRESHOLD: z.coerce.number().int().positive().default(2),
+  RECONFIRMATION_WINDOW_HOURS: z.coerce.number().positive().default(24),
+  RECONFIRMATION_RESPONSE_DEADLINE_HOURS: z.coerce.number().positive().default(1),
+  NO_SHOW_GRACE_MINUTES: z.coerce.number().positive().default(15),
+  DEPOSIT_FORFEITURE_WINDOW_HOURS: z.coerce.number().positive().default(24),
+  REMINDER_JOB_INTERVAL_MS: z.coerce.number().int().positive().default(900000),
+  NO_SHOW_RISK_JOB_INTERVAL_MS: z.coerce.number().int().positive().default(300000),
+  NO_SHOW_JOB_INTERVAL_MS: z.coerce.number().int().positive().default(900000),
+  ENABLE_SCHEDULED_JOBS: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
 });
 
 export type Env = z.infer<typeof envSchema>;

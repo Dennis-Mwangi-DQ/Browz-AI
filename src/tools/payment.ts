@@ -11,6 +11,10 @@ const PaymentParams = z.object({
   description: z.string().min(1),
 });
 
+const CompletePaymentParams = z.object({
+  bookingRef: z.string().min(1),
+});
+
 export async function generatePaymentLink(params: {
   bookingRef: string;
   amountAed: number;
@@ -63,5 +67,56 @@ export async function generatePaymentLink(params: {
   } catch (error) {
     console.error('generatePaymentLink failed', error);
     return fail('payment_link_failed');
+  }
+}
+
+export async function completeBookingPayment(params: {
+  bookingRef: string;
+}): Promise<ToolResult<{ bookingId: string; paymentStatus: 'deposit_paid' | 'paid' }>> {
+  const parsed = CompletePaymentParams.safeParse(params);
+  if (!parsed.success) {
+    return fail('invalid_payment_completion_params');
+  }
+
+  if (!supabase) {
+    return fail('supabase_not_configured');
+  }
+
+  try {
+    const { data: booking, error: fetchError } = await supabase
+      .from('bookings')
+      .select('id, payment_type')
+      .eq('id', params.bookingRef)
+      .maybeSingle();
+
+    if (fetchError) {
+      console.error('completeBookingPayment lookup failed', fetchError);
+      return fail('payment_completion_failed');
+    }
+
+    if (!booking) {
+      return fail('booking_not_found');
+    }
+
+    const paymentStatus = booking.payment_type === 'deposit' ? 'deposit_paid' : 'paid';
+
+    const { error } = await supabase
+      .from('bookings')
+      .update({
+        status: 'confirmed',
+        payment_status: paymentStatus,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', params.bookingRef);
+
+    if (error) {
+      console.error('completeBookingPayment update failed', error);
+      return fail('payment_completion_failed');
+    }
+
+    return ok({ bookingId: params.bookingRef, paymentStatus });
+  } catch (error) {
+    console.error('completeBookingPayment failed', error);
+    return fail('payment_completion_failed');
   }
 }

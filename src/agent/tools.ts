@@ -21,6 +21,7 @@ import {
 } from '../tools/services';
 import { submitScreening } from '../tools/screenings';
 import { findArtistByName, findBranchByName, findServiceByName, getDefaultBranch } from '../lib/catalog';
+import { isValidContact } from '../lib/phone';
 import { isoToSalonLocalTime, resolveBookingDate, slotMatchesSalonLocalTime } from '../lib/dates';
 import { updateSession } from '../memory/sessionManager';
 import type { AgentContextSnapshot, ScreeningAnswers, SessionContext } from '../types';
@@ -225,6 +226,15 @@ async function executeToolImpl(
         };
       }
 
+      if (!session.clientId && visitorContact && !isValidContact(visitorContact)) {
+        return {
+          success: false,
+          error: 'invalid_contact',
+          message:
+            'The contact provided does not look like a valid phone number or email. Please ask the user to provide a real phone number (e.g. +971501234567) or email address.',
+        };
+      }
+
       const screeningRef = getContextSnapshot(session).lastScreeningRef;
       const booking = await createBooking({
         clientId: session.clientId,
@@ -390,6 +400,15 @@ async function executeToolImpl(
         return { success: false, error: 'visitor_details_required' };
       }
 
+      if (!session.clientId && consultVisitorContact && !isValidContact(consultVisitorContact)) {
+        return {
+          success: false,
+          error: 'invalid_contact',
+          message:
+            'The contact provided does not look like a valid phone number or email. Please ask the user to provide a real phone number or email address.',
+        };
+      }
+
       const availability = await queryAvailability({
         serviceId: service.id,
         branchId: branch.id,
@@ -467,6 +486,15 @@ async function executeToolImpl(
       // Require identity for unauthenticated sessions — screening must be linkable
       if (!session.clientId && (!visitorName || !visitorContact)) {
         return { success: false, error: 'visitor_details_required' };
+      }
+
+      if (!session.clientId && visitorContact && !isValidContact(visitorContact)) {
+        return {
+          success: false,
+          error: 'invalid_contact',
+          message:
+            'The contact provided does not look like a valid phone number or email. Please ask the user to provide a real phone number or email address.',
+        };
       }
 
       const result = await submitScreening({

@@ -5,7 +5,7 @@ import {
   checkTreatmentFrequency,
   type GateCheckContext,
 } from './gateChecker';
-import { createBooking, modifyBooking, cancelBooking } from '../tools/bookings';
+import { createBooking, modifyBooking, cancelBooking, fetchBooking } from '../tools/bookings';
 import { queryAvailability, queryNextAvailableDates } from '../tools/availability';
 import { createConsultation } from '../tools/consultations';
 import { getClearanceStatus } from '../tools/clearances';
@@ -131,6 +131,17 @@ async function executeToolImpl(
         } : undefined,
         error: availability.error,
       };
+    }
+    case 'fetch_booking': {
+      const bookingRef = String(safeArgs.bookingReference ?? '');
+      if (!bookingRef) {
+        return { success: false, error: 'booking_reference_required' };
+      }
+      const result = await fetchBooking({ bookingRef });
+      if (!result.success || !result.data) {
+        return { success: false, error: result.error ?? 'booking_not_found' };
+      }
+      return { success: true, data: result.data.booking };
     }
     case 'create_booking': {
       const service = await resolveServiceName(String(safeArgs.service ?? ''));
@@ -272,12 +283,13 @@ async function executeToolImpl(
       };
     }
     case 'modify_booking': {
+      console.log('modify_booking', session);
       const bookingRef = String(safeArgs.bookingReference ?? '');
       const service = await resolveServiceName(String(safeArgs.service ?? ''));
       if (!bookingRef) {
         return { success: false, error: 'booking_reference_required' };
       }
-      if (!session.clientId) {
+      if (session.userTier === 'client' && !session.clientId) {
         return { success: false, error: 'client_required' };
       }
       if (!service) {
@@ -314,7 +326,7 @@ async function executeToolImpl(
       const result = await modifyBooking({
         bookingRef,
         newSlotId: matchingSlot.id,
-        clientId: session.clientId,
+        clientId: session.userTier === 'client' ? session.clientId : null,
       });
       return { success: result.success, data: result.data, error: result.error };
     }
@@ -323,10 +335,10 @@ async function executeToolImpl(
       if (!bookingRef) {
         return { success: false, error: 'booking_reference_required' };
       }
-      if (!session.clientId) {
+      if (session.userTier === 'client' && !session.clientId) {
         return { success: false, error: 'client_required' };
       }
-      const result = await cancelBooking({ bookingRef, clientId: session.clientId });
+      const result = await cancelBooking({ bookingRef, clientId: session.userTier === 'client' ? session.clientId : null });
       return { success: result.success, data: result.data, error: result.error };
     }
     case 'add_notes': {
@@ -610,6 +622,9 @@ export function createSessionTools(session: SessionContext) {
   const cancelBookingImpl = async ({ bookingReference }: { bookingReference: string }) =>
     executeToolImpl('cancel_booking', { bookingReference }, session);
 
+  const fetchBookingImpl = async ({ bookingReference }: { bookingReference: string }) =>
+    executeToolImpl('fetch_booking', { bookingReference }, session);
+
   const addNotesImpl = async ({
     bookingReference,
     notes,
@@ -755,6 +770,14 @@ export function createSessionTools(session: SessionContext) {
     description: 'Cancel a booking using a booking reference.',
     schema: z.object({
       bookingReference: z.string().describe('Booking reference to cancel'),
+    }),
+  });
+
+  const fetchBookingTool = tool(fetchBookingImpl, {
+    name: 'fetch_booking',
+    description: 'Fetch a booking using a booking reference.',
+    schema: z.object({
+      bookingReference: z.string().describe('Booking reference to fetch'),
     }),
   });
 
@@ -905,6 +928,7 @@ export function createSessionTools(session: SessionContext) {
     checkFrequencyTool,
     submitScreeningTool,
     checkPreBookingRequirementsTool,
+    fetchBookingTool,
   ];
 
   const toolImplementations: Record<
@@ -919,6 +943,7 @@ export function createSessionTools(session: SessionContext) {
     create_booking: (args) => createBookingImpl(args as Parameters<typeof createBookingImpl>[0]),
     modify_booking: (args) => modifyBookingImpl(args as Parameters<typeof modifyBookingImpl>[0]),
     cancel_booking: (args) => cancelBookingImpl(args as Parameters<typeof cancelBookingImpl>[0]),
+    fetch_booking: (args) => fetchBookingImpl(args as Parameters<typeof fetchBookingImpl>[0]),
     add_notes: (args) => addNotesImpl(args as Parameters<typeof addNotesImpl>[0]),
     initiate_payment: (args) =>
       initiatePaymentImpl(args as Parameters<typeof initiatePaymentImpl>[0]),

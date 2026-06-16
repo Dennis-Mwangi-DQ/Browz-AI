@@ -6,7 +6,7 @@ import { emitBookingCancelled } from '../lib/events';
 import { generateSequenceId } from '../lib/ids';
 import { normalizePhoneNumber } from '../lib/phone';
 import { fail, ok } from '../lib/result';
-import type { BookingSource, PaymentRule, TimeSlot, ToolResult } from '../types';
+import type { BookingRecord, BookingSource, PaymentRule, TimeSlot, ToolResult } from '../types';
 
 const CreateBookingParams = z.object({
   clientId: z.string().uuid().nullable(),
@@ -30,12 +30,16 @@ const CreateBookingParams = z.object({
 const ModifyBookingParams = z.object({
   bookingRef: z.string().min(1),
   newSlotId: z.string().min(1),
-  clientId: z.string().uuid(),
+  clientId: z.string().uuid().nullable(),
 });
 
 const CancelBookingParams = z.object({
   bookingRef: z.string().min(1),
-  clientId: z.string().uuid(),
+  clientId: z.string().uuid().nullable(),
+});
+
+const FetchBookingParams = z.object({
+  bookingRef: z.string().min(1),
 });
 
 function yearPart() {
@@ -217,7 +221,7 @@ export async function createBooking(params: {
 export async function modifyBooking(params: {
   bookingRef: string;
   newSlotId: string;
-  clientId: string;
+  clientId: string | null;
 }): Promise<ToolResult<{ bookingId: string; newSlot: TimeSlot }>> {
   const parsed = ModifyBookingParams.safeParse(params);
   if (!parsed.success) {
@@ -231,12 +235,13 @@ export async function modifyBooking(params: {
     }
 
     if (supabase) {
-      const { data: booking } = await supabase
-        .from('bookings')
-        .select('id, slot_id, client_id')
-        .eq('id', params.bookingRef)
-        .eq('client_id', params.clientId)
-        .maybeSingle();
+      const query = supabase
+  .from('bookings')
+  .select('id, slot_id, client_id, visitor_name, visitor_contact, service_id, branch_id, artist_id, status, payment_status, payment_type, deposit_amount_aed, balance_due_aed')
+  .eq('id', params.bookingRef);
+ const { data: booking } = params.clientId
+  ? await query.eq('client_id', params.clientId).maybeSingle()
+  : await query.is('client_id', null).maybeSingle();
 
       if (!booking) {
         return fail('booking_not_found');
@@ -259,7 +264,7 @@ export async function modifyBooking(params: {
 
 export async function cancelBooking(params: {
   bookingRef: string;
-  clientId: string;
+  clientId: string | null;
 }): Promise<ToolResult<{ bookingId: string }>> {
   const parsed = CancelBookingParams.safeParse(params);
   if (!parsed.success) {
@@ -268,12 +273,13 @@ export async function cancelBooking(params: {
 
   try {
     if (supabase) {
-      const { data: booking } = await supabase
-        .from('bookings')
-        .select('id, slot_id, service_id, branch_id')
-        .eq('id', params.bookingRef)
-        .eq('client_id', params.clientId)
-        .maybeSingle();
+       const query = supabase
+  .from('bookings')
+  .select('id, slot_id, client_id, visitor_name, visitor_contact, service_id, branch_id, artist_id, status, payment_status, payment_type, deposit_amount_aed, balance_due_aed')
+  .eq('id', params.bookingRef);
+ const { data: booking } = params.clientId
+  ? await query.eq('client_id', params.clientId).maybeSingle()
+  : await query.is('client_id', null).maybeSingle();
 
       if (!booking) {
         return fail('booking_not_found');
@@ -320,5 +326,49 @@ export async function cancelBooking(params: {
   } catch (error) {
     console.error('cancelBooking failed', error);
     return fail('booking_cancel_failed');
+  }
+}
+
+export async function fetchBooking(params: {
+  bookingRef: string;
+}): Promise<ToolResult<{ booking: BookingRecord }>> {
+  const parsed = FetchBookingParams.safeParse(params);
+  if (!parsed.success) {
+    return fail('invalid_fetch_booking_params');
+  }
+
+  try {
+    if (supabase) {
+const { data: booking } = await supabase
+  .from('bookings')
+  .select(`
+    id,
+    visitor_name,
+    visitor_contact,
+    client_id,
+    service_id,
+    status,
+    payment_status,
+    payment_type,
+    deposit_amount_aed,
+    balance_due_aed,
+    branch:branches ( id, name, city ),
+    artist:artists ( id, name, role ),
+    slot:time_slots ( id, start_time, end_time )
+  `)
+  .eq('id', params.bookingRef)
+  .maybeSingle();
+
+      if (!booking) {
+        return fail('booking_not_found');
+      }
+
+      return ok({ booking: booking as unknown as BookingRecord });
+    }
+
+    return fail('booking_not_found');
+  } catch (error) {
+    console.error('fetchBooking failed', error);
+    return fail('booking_fetch_failed');
   }
 }

@@ -6,7 +6,7 @@ TypeScript/Express backend for the Browz Booking Concierge AI Agent.
 
 Production chat uses a single LangChain agent (`runAgent` in `src/agent/agent.ts`):
 
-1. `createAgentLlm()` selects the LLM from `LLM_PROVIDER` (Ollama, OpenAI, Anthropic, or OpenRouter)
+1. `createAgentLlm()` selects the LLM from `LLM_PROVIDER` (Ollama, OpenAI, Anthropic, OpenRouter, or DeepSeek)
 2. Tools are bound with Zod schemas (`src/agent/tools.ts`)
 3. A ReAct loop invokes tools and returns `ToolMessage` results until the model produces a final answer
 4. Session context (`lastService`, `lastBranch`, `lastBookingRef`) is persisted on the session
@@ -77,6 +77,18 @@ Change `LLM_PROVIDER` only — the agent loop, tools, and prompts stay the same.
 | OpenAI | `OPENAI_API_KEY`, `OPENAI_MODEL` |
 | Anthropic | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` |
 | OpenRouter | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` |
+| DeepSeek | `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL` |
+
+DeepSeek uses the OpenAI-compatible endpoint by default:
+
+```text
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=your_deepseek_key
+DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+```
+
+Supported DeepSeek model defaults are `deepseek-v4-flash` and `deepseek-v4-pro`. `deepseek-chat` and `deepseek-reasoner` are legacy aliases scheduled for deprecation on 2026-07-24 15:59 UTC.
 
 ## Health check
 

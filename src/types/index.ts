@@ -72,6 +72,7 @@ export const AgentContextSnapshotSchema = z.object({
   lastBranch: z.string().optional(),
   lastBookingRef: z.string().optional(),
   lastWaitlistRef: z.string().optional(),
+  lastScreeningRef: z.string().optional(),
   visitorName: z.string().optional(),
   visitorContact: z.string().optional(),
   recentTopics: z.array(z.string()).optional(),

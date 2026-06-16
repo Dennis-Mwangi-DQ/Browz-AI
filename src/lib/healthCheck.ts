@@ -30,6 +30,8 @@ function getConfiguredChatModel(): string {
       return env.ANTHROPIC_MODEL;
     case 'openrouter':
       return getActiveModel();
+    case 'deepseek':
+      return env.DEEPSEEK_MODEL;
     default:
       return 'unknown';
   }

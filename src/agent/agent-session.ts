@@ -96,6 +96,9 @@ export function formatContextForPrompt(
   if (snapshot.lastWaitlistRef) {
     lines.push(`Waitlist reference in focus: ${snapshot.lastWaitlistRef}`);
   }
+  if (snapshot.lastScreeningRef) {
+    lines.push(`Medical screening submitted: ${snapshot.lastScreeningRef}`);
+  }
   if (snapshot.visitorName) {
     lines.push(`Visitor name: ${snapshot.visitorName}`);
   }

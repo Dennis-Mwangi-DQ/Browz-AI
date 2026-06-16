@@ -59,4 +59,21 @@ describe('getHealthStatus', () => {
     expect(health.status).toBe('degraded');
     expect(health.ollama?.reachable).toBe(false);
   });
+
+  it('reports deepseek provider when configured', async () => {
+    process.env.LLM_PROVIDER = 'deepseek';
+    process.env.DEEPSEEK_API_KEY = 'test-deepseek-key';
+    process.env.DEEPSEEK_MODEL = 'deepseek-v4-pro';
+
+    const { getHealthStatus } = await import('../src/lib/healthCheck');
+    const health = await getHealthStatus();
+
+    expect(health.status).toBe('ok');
+    expect(health.llm).toEqual({
+      provider: 'deepseek',
+      model: 'deepseek-v4-pro',
+      enabled: true,
+    });
+    expect(health.ollama).toBeUndefined();
+  });
 });

@@ -1,18 +1,30 @@
 import { type Request, type Response, Router } from 'express';
+import { z } from 'zod';
 import { cancelBookingForRecovery } from '../agent/recoveryOrchestrator';
 import { registerWalkin } from '../tools/walkin';
+import type { CancellationSource } from '../types';
 
 export const bookingsRouter = Router();
+
+const CancelBody = z.object({
+  clientId: z.string().uuid().optional(),
+  cancellationSource: z.enum(['staff', 'portal']).optional(),
+});
 
 bookingsRouter.post('/:id/cancel', async (req: Request, res: Response) => {
   try {
     const bookingRef = String(req.params.id);
-    const clientId = req.body?.clientId ? String(req.body.clientId) : undefined;
+    const parsed = CancelBody.safeParse(req.body ?? {});
+    const clientId = parsed.success && parsed.data.clientId ? parsed.data.clientId : undefined;
+    const cancellationSource: CancellationSource =
+      parsed.success && parsed.data.cancellationSource
+        ? parsed.data.cancellationSource
+        : 'staff';
 
     const result = await cancelBookingForRecovery({
       bookingRef,
       clientId,
-      cancellationSource: 'staff',
+      cancellationSource,
     });
 
     if (!result.success) {

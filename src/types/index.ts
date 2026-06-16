@@ -3,7 +3,14 @@ import { z } from 'zod';
 export const ServiceTier = z.enum(['T1', 'T2', 'T3']);
 export const UserTier = z.enum(['visitor', 'client']);
 export const Channel = z.enum(['web', 'whatsapp']);
-export const BookingStatus = z.enum(['confirmed', 'modified', 'cancelled', 'pending_payment', 'completed']);
+export const BookingStatus = z.enum([
+  'confirmed',
+  'modified',
+  'cancelled',
+  'pending_payment',
+  'completed',
+  'no_show',
+]);
 export const PaymentType = z.enum(['full_upfront', 'deposit', 'package', 'free']);
 export const ScreeningStatus = z.enum(['PENDING', 'APPROVED', 'FLAGGED', 'EXPIRED', 'DECLINED', 'NEEDS_INFO']);
 
@@ -170,7 +177,8 @@ export type TimeSlotStatus =
   | 'booked'
   | 'blocked'
   | 'hold'
-  | 'open_for_walkin';
+  | 'open_for_walkin'
+  | 'unfilled';
 
 export interface TimeSlot {
   id: string;

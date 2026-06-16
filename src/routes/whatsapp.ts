@@ -54,6 +54,10 @@ whatsappRouter.post('/', async (req, res) => {
           twiml.message(
             `Your slot is confirmed! Booking reference: ${result.data.bookingId}. We look forward to seeing you.`,
           );
+        } else if (result.error === 'gate_blocked') {
+          twiml.message(
+            'This service requires a consultation or patch test before booking. Please contact the salon to complete clearance, then join the waitlist again for the next opening.',
+          );
         } else {
           twiml.message(
             'Sorry, we could not confirm that slot. Please contact the salon or try again.',

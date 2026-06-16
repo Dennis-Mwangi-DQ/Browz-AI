@@ -5,7 +5,13 @@
 ALTER TABLE time_slots DROP CONSTRAINT IF EXISTS time_slots_status_check;
 ALTER TABLE time_slots
   ADD CONSTRAINT time_slots_status_check
-  CHECK (status IN ('available', 'booked', 'blocked', 'hold', 'open_for_walkin'));
+  CHECK (status IN ('available', 'booked', 'blocked', 'hold', 'open_for_walkin', 'unfilled'));
+
+-- No-show booking status (appointment marked absent, slot enters recovery)
+ALTER TABLE bookings DROP CONSTRAINT IF EXISTS bookings_status_check;
+ALTER TABLE bookings
+  ADD CONSTRAINT bookings_status_check
+  CHECK (status IN ('confirmed', 'modified', 'cancelled', 'pending_payment', 'completed', 'no_show'));
 
 -- Branch notification configuration
 ALTER TABLE branches

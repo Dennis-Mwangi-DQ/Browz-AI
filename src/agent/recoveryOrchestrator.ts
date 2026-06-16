@@ -1,5 +1,11 @@
 import { supabase } from '../db/supabaseClient';
 import { onBookingCancelled } from '../lib/events';
+import {
+  findActiveRecoveryLogId,
+  incrementRecoveryLogCounter,
+  updateRecoveryLog,
+  completeRecoveryLog,
+} from '../lib/recoveryLog';
 import { notifyOfferExpired, notifySlotOffer } from '../lib/notify';
 import {
   declineSlotOffer,
@@ -9,7 +15,7 @@ import {
 } from '../tools/waitlist';
 import type { BookingCancelledEvent, CancellationSource, WaitlistEntry } from '../types';
 
-const activeRecoveries = new Map<string, string>();
+const activeRecoveries = new Set<string>();
 
 async function createRecoveryLog(
   event: BookingCancelledEvent,
@@ -41,17 +47,6 @@ async function createRecoveryLog(
   return String(data.id);
 }
 
-async function updateRecoveryLog(
-  logId: string,
-  patch: Record<string, unknown>,
-): Promise<void> {
-  if (!supabase) {
-    return;
-  }
-
-  await supabase.from('slot_recovery_log').update(patch).eq('id', logId);
-}
-
 async function surfaceWalkinSlot(slotId: string, logId: string | null): Promise<void> {
   if (!supabase) {
     return;
@@ -61,7 +56,6 @@ async function surfaceWalkinSlot(slotId: string, logId: string | null): Promise<
 
   if (logId) {
     await updateRecoveryLog(logId, {
-      outcome: null,
       notes: 'Waitlist exhausted — slot open for walk-in',
     });
   }
@@ -99,9 +93,7 @@ export async function tryNextCandidate(
   }
 
   if (logId) {
-    await updateRecoveryLog(logId, {
-      offers_sent: (await getLogCounter(logId, 'offers_sent')) + 1,
-    });
+    await incrementRecoveryLogCounter(logId, 'offers_sent');
   }
 
   const channel = offerResult.data.notificationChannel;
@@ -114,18 +106,6 @@ export async function tryNextCandidate(
   });
 }
 
-async function getLogCounter(logId: string, field: string): Promise<number> {
-  if (!supabase) {
-    return 0;
-  }
-
-  const { data } = await supabase.from('slot_recovery_log').select(field).eq('id', logId).maybeSingle();
-  if (!data || typeof data !== 'object') {
-    return 0;
-  }
-  return Number((data as Record<string, unknown>)[field] ?? 0);
-}
-
 export async function handleCancellation(event: BookingCancelledEvent): Promise<void> {
   if (!supabase) {
     return;
@@ -135,13 +115,10 @@ export async function handleCancellation(event: BookingCancelledEvent): Promise<
     return;
   }
 
-  activeRecoveries.set(event.slotId, event.bookingId);
+  activeRecoveries.add(event.slotId);
 
   try {
     const logId = await createRecoveryLog(event);
-    if (logId) {
-      activeRecoveries.set(`${event.slotId}:log`, logId);
-    }
 
     const matches = await findWaitlistMatches(
       event.slotId,
@@ -202,11 +179,9 @@ export async function handleOfferDeclined(
     return;
   }
 
-  const logId = activeRecoveries.get(`${slotId}:log`) ?? null;
+  const logId = await findActiveRecoveryLogId(slotId);
   if (logId) {
-    await updateRecoveryLog(logId, {
-      offers_declined: (await getLogCounter(logId, 'offers_declined')) + 1,
-    });
+    await incrementRecoveryLogCounter(logId, 'offers_declined');
   }
 
   const { data: slot } = await supabase
@@ -240,11 +215,9 @@ export async function handleOfferExpired(
     return;
   }
 
-  const logId = activeRecoveries.get(`${slotId}:log`) ?? null;
+  const logId = await findActiveRecoveryLogId(slotId);
   if (logId) {
-    await updateRecoveryLog(logId, {
-      offers_expired: (await getLogCounter(logId, 'offers_expired')) + 1,
-    });
+    await incrementRecoveryLogCounter(logId, 'offers_expired');
   }
 
   const { data: slot } = await supabase
@@ -272,16 +245,7 @@ export async function completeRecovery(
   outcome: 'waitlist_filled' | 'walkin_filled' | 'staff_assigned',
   recoveredBookingId: string,
 ): Promise<void> {
-  const logId = activeRecoveries.get(`${slotId}:log`);
-  if (!logId || !supabase) {
-    return;
-  }
-
-  await updateRecoveryLog(logId, {
-    outcome,
-    recovered_booking_id: recoveredBookingId,
-    recovery_completed_at: new Date().toISOString(),
-  });
+  await completeRecoveryLog(slotId, outcome, recoveredBookingId);
 }
 
 export function startRecoveryListener(): void {

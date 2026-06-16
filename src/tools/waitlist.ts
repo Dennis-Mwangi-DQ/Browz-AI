@@ -3,6 +3,7 @@ import { checkPreBookingRequirements } from '../agent/gateChecker';
 import { supabase } from '../db/supabaseClient';
 import { getBranchById, getServiceById } from '../lib/catalog';
 import { getEnv } from '../lib/env';
+import { isoToSalonLocalDate, isoToSalonLocalTime } from '../lib/dates';
 import { generateSequenceId } from '../lib/ids';
 import { normalizePhoneNumber } from '../lib/phone';
 import { fail, ok } from '../lib/result';
@@ -197,8 +198,9 @@ export async function findWaitlistMatches(
     return [];
   }
 
-  const slotDate = slotStartTime.toISOString().slice(0, 10);
-  const slotTime = slotStartTime.toISOString().slice(11, 16);
+  const slotIso = slotStartTime.toISOString();
+  const slotDate = isoToSalonLocalDate(slotIso);
+  const slotTime = isoToSalonLocalTime(slotIso);
 
   const { data } = await supabase
     .from('waitlist')

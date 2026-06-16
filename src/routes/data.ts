@@ -124,18 +124,40 @@ dataRouter.get('/slots', async (req: Request, res: Response) => {
       return res.status(500).json({ error: error.message });
     }
 
+    const slotIds = (data ?? []).map((row) => String(row.id));
+    const recoveredSources = new Set(['waitlist_recovery', 'walkin_agent', 'walkin_staff']);
+    const recoveredSlotIds = new Set<string>();
+
+    if (slotIds.length > 0) {
+      const { data: bookings } = await supabase
+        .from('bookings')
+        .select('slot_id, booking_source')
+        .in('slot_id', slotIds)
+        .in('status', ['confirmed', 'modified']);
+
+      for (const booking of bookings ?? []) {
+        if (booking.slot_id && recoveredSources.has(String(booking.booking_source))) {
+          recoveredSlotIds.add(String(booking.slot_id));
+        }
+      }
+    }
+
     return res.json({
-      data: (data ?? []).map((row) => ({
-        id: String(row.id),
-        branchId: String(row.branch_id),
-        serviceId: String(row.service_id),
-        artistId: row.artist_id ? String(row.artist_id) : null,
-        startTime: String(row.start_time),
-        endTime: String(row.end_time),
-        status: String(row.status),
-        isWalkin: String(row.status) === 'open_for_walkin',
-        isRecovered: false,
-      })),
+      data: (data ?? []).map((row) => {
+        const status = String(row.status);
+        return {
+          id: String(row.id),
+          branchId: String(row.branch_id),
+          serviceId: String(row.service_id),
+          artistId: row.artist_id ? String(row.artist_id) : null,
+          startTime: String(row.start_time),
+          endTime: String(row.end_time),
+          status,
+          isWalkin: status === 'open_for_walkin',
+          isUnfilled: status === 'unfilled',
+          isRecovered: status === 'booked' && recoveredSlotIds.has(String(row.id)),
+        };
+      }),
     });
   } catch (err) {
     console.error('GET /data/slots failed', err);

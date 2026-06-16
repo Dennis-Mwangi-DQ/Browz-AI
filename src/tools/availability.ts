@@ -108,7 +108,7 @@ export async function queryNextAvailableDates(params: {
     let query = supabase
       .from('time_slots')
       .select('start_time')
-      .eq('status', 'available')
+      .in('status', ['available', 'open_for_walkin'])
       .eq('service_id', params.serviceId)
       .eq('branch_id', params.branchId)
       .gte('start_time', rangeStart)

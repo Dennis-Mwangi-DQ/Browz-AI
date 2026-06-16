@@ -31,7 +31,7 @@ export async function processNoShows(): Promise<void> {
 
     await supabase
       .from('bookings')
-      .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+      .update({ status: 'no_show', updated_at: new Date().toISOString() })
       .eq('id', booking.id);
 
     await supabase

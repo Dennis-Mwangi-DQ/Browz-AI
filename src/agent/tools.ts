@@ -597,6 +597,7 @@ async function executeToolImpl(
         visitorName: visitorName ?? undefined,
         visitorContact,
         preferredArtistId: artist?.id,
+        notificationChannel: session.channel === 'web' ? 'both' : undefined,
       });
       if (!result.success || !result.data) {
         return { success: false, error: result.error };

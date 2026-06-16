@@ -109,7 +109,7 @@ async function isSlotBookable(
     return true;
   }
 
-  if (slot.status === 'open_for_walkin') {
+  if (slot.status === 'open_for_walkin' || slot.status === 'unfilled') {
     return bookingSource === 'walkin_agent' || bookingSource === 'walkin_staff';
   }
 

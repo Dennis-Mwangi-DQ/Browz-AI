@@ -43,7 +43,7 @@ export async function registerWalkin(params: {
     }
 
     const status = String(slot.status);
-    if (status !== 'open_for_walkin' && status !== 'available') {
+    if (status !== 'open_for_walkin' && status !== 'unfilled' && status !== 'available') {
       return fail('slot_not_available_for_walkin');
     }
 

@@ -25,6 +25,11 @@ function formatOfferDate(iso: string): string {
   });
 }
 
+function offerWindowMinutes(expiresAt: string): number {
+  const remainingMs = new Date(expiresAt).getTime() - Date.now();
+  return Math.max(1, Math.round(remainingMs / 60_000));
+}
+
 function buildWhatsAppMessage(params: {
   name: string;
   branchName: string;
@@ -34,6 +39,7 @@ function buildWhatsAppMessage(params: {
   artistName: string;
   expiresAt: string;
 }): string {
+  const windowMin = offerWindowMinutes(params.expiresAt);
   return (
     `Hi ${params.name} 👋 A slot just opened up at Browz ${params.branchName}!\n\n` +
     `Service: ${params.serviceName}\n` +
@@ -41,7 +47,7 @@ function buildWhatsAppMessage(params: {
     `Time: ${params.time}\n` +
     `Artist: ${params.artistName}\n\n` +
     `Would you like to book this slot? Reply YES to confirm or NO to pass.\n` +
-    `This offer is held for you until ${formatOfferTime(params.expiresAt)} — 15 minutes from now.`
+    `This offer is held for you until ${formatOfferTime(params.expiresAt)} — ${windowMin} minutes from now.`
   );
 }
 
@@ -114,6 +120,59 @@ export async function notifySlotOffer(params: {
   }
 
   return offer;
+}
+
+export async function notifyStaffUnfilledSlot(params: {
+  slotId: string;
+  branchId: string;
+  serviceId: string;
+  artistId: string | null;
+  startTime: string;
+  leadMinutes: number;
+}): Promise<void> {
+  const service = await getServiceById(params.serviceId);
+  const branch = await getBranchById(params.branchId);
+  const artist = params.artistId ? await getArtistById(params.artistId) : null;
+
+  const message =
+    `Unfilled slot alert: ${service?.name ?? params.serviceId} at ${branch?.name ?? params.branchId} ` +
+    `on ${formatOfferDate(params.startTime)} at ${formatOfferTime(params.startTime)}` +
+    (artist ? ` with ${artist.name}` : '') +
+    `. No walk-in booked — ${params.leadMinutes} minutes until start. Slot ID: ${params.slotId}`;
+
+  const webhook = getEnv('ESCALATION_WEBHOOK_URL');
+  if (webhook) {
+    try {
+      await fetch(webhook, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'unfilled_slot',
+          slotId: params.slotId,
+          branchId: params.branchId,
+          message,
+        }),
+      });
+    } catch (error) {
+      console.error('Unfilled slot webhook failed', error);
+    }
+  }
+
+  const client = getTwilioClient();
+  const from = getEnv('TWILIO_WHATSAPP_NUMBER');
+  const branchPhone = branch?.phone;
+  if (client && from && branchPhone) {
+    const to = branchPhone.startsWith('whatsapp:')
+      ? branchPhone
+      : `whatsapp:${branchPhone}`;
+    try {
+      await client.messages.create({ from, to, body: message });
+    } catch (error) {
+      console.error('Staff unfilled slot WhatsApp failed', error);
+    }
+  } else {
+    console.warn('[unfilled-slot]', message);
+  }
 }
 
 export async function notifyOfferExpired(entry: WaitlistEntry): Promise<void> {

@@ -129,7 +129,7 @@ CREATE TABLE bookings (
   slot_id uuid REFERENCES time_slots(id),
   artist_id text REFERENCES artists(id) NULL,
   status text DEFAULT 'confirmed'
-    CHECK (status IN ('confirmed','modified','cancelled','pending_payment','completed')),
+    CHECK (status IN ('confirmed','modified','cancelled','pending_payment','completed','no_show')),
   notes text,
   booking_type text DEFAULT 'single'
     CHECK (booking_type IN ('single','consultation','package_first_session')),

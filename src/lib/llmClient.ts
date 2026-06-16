@@ -79,6 +79,24 @@ export function createAgentLlm(): BaseChatModel {
       });
     }
 
+    case 'deepseek': {
+      const apiKey = env.DEEPSEEK_API_KEY;
+      if (!apiKey) {
+        throw new Error(
+          'DEEPSEEK_API_KEY is required when LLM_PROVIDER=deepseek',
+        );
+      }
+      return new ChatOpenAI({
+        model: env.DEEPSEEK_MODEL,
+        apiKey,
+        temperature,
+        maxTokens,
+        configuration: {
+          baseURL: env.DEEPSEEK_BASE_URL,
+        },
+      });
+    }
+
     default:
       throw new Error(`Unsupported LLM_PROVIDER: ${env.LLM_PROVIDER}`);
   }

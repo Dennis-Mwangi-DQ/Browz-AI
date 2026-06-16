@@ -66,6 +66,9 @@ export function formatContextForPrompt(
   if (snapshot.lastBookingRef) {
     lines.push(`Booking reference in focus: ${snapshot.lastBookingRef}`);
   }
+  if (snapshot.lastScreeningRef) {
+    lines.push(`Medical screening submitted: ${snapshot.lastScreeningRef}`);
+  }
   if (snapshot.visitorName) {
     lines.push(`Visitor name: ${snapshot.visitorName}`);
   }

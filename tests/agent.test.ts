@@ -147,6 +147,27 @@ describe('runAgent', () => {
     expect(result.toolCalls).toEqual([]);
   });
 
+  it('strips emoji characters from model responses', async () => {
+    invokeMock.mockResolvedValueOnce(
+      new AIMessage({
+        content:
+          '### 🚫 Medical Screening Required\n\nProfhilo needs screening first. ✅',
+      }),
+    );
+
+    const result = await runAgent({
+      message: 'Can I book Profhilo?',
+      sessionId: baseSession.sessionId,
+      channel: 'web',
+    });
+
+    expect(result.response).toBe(
+      '### Medical Screening Required\n\nProfhilo needs screening first.',
+    );
+    expect(result.response).not.toContain('🚫');
+    expect(result.response).not.toContain('✅');
+  });
+
   it('returns availability results for an in-scope message', async () => {
     const tomorrow = toIsoDate(new Date(Date.now() + 86400000));
 

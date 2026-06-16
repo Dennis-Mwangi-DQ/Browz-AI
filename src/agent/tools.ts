@@ -1,8 +1,12 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
-import { checkPreBookingRequirements, checkTreatmentFrequency } from './gateChecker';
-import { createBooking, modifyBooking, cancelBooking } from '../tools/bookings';
-import { queryAvailability } from '../tools/availability';
+import {
+  checkPreBookingRequirements,
+  checkTreatmentFrequency,
+  type GateCheckContext,
+} from './gateChecker';
+import { createBooking, modifyBooking, cancelBooking, fetchBooking } from '../tools/bookings';
+import { queryAvailability, queryNextAvailableDates } from '../tools/availability';
 import { createConsultation } from '../tools/consultations';
 import { getClearanceStatus } from '../tools/clearances';
 import {
@@ -15,13 +19,38 @@ import { addNotes } from '../tools/notes';
 import { generatePaymentLink } from '../tools/payment';
 import { getContextSnapshot } from './agent-session';
 import { lookupFaq } from '../tools/faq';
-import { listServices, listBranchesForService, listArtistsForServiceAtBranch } from '../tools/services';
+import {
+  listServices,
+  listBranchesForService,
+  listArtistsForServiceAtBranch,
+  listServiceLocations,
+} from '../tools/services';
 import { submitScreening } from '../tools/screenings';
 import { findArtistByName, findBranchByName, findServiceByName, getDefaultBranch } from '../lib/catalog';
-import { resolveBookingDate } from '../lib/dates';
-import type { ScreeningAnswers, SessionContext } from '../types';
+import { isValidContact } from '../lib/phone';
+import { isoToSalonLocalTime, resolveBookingDate, slotMatchesSalonLocalTime } from '../lib/dates';
+import { updateSession } from '../memory/sessionManager';
+import type { AgentContextSnapshot, ScreeningAnswers, SessionContext } from '../types';
 
 type ToolResultRecord = Record<string, unknown>;
+
+function buildGateContext(session: SessionContext): GateCheckContext {
+  const snapshot = getContextSnapshot(session);
+  return {
+    visitorContact: snapshot.visitorContact ?? session.whatsappNumber,
+    visitorName: snapshot.visitorName,
+    screeningRef: snapshot.lastScreeningRef,
+  };
+}
+
+async function persistAgentContext(session: SessionContext, patch: Partial<AgentContextSnapshot>) {
+  const nextContext: AgentContextSnapshot = {
+    ...getContextSnapshot(session),
+    ...patch,
+  };
+  session.agentContext = nextContext;
+  await updateSession(session.sessionId, { agentContext: nextContext });
+}
 
 function resolveServiceName(service?: string) {
   if (!service) {
@@ -78,14 +107,47 @@ async function executeToolImpl(
         date: resolvedDate.date,
         artistId: artist?.id ?? undefined,
       });
+
+      const slots = availability.data ?? [];
+
+      // When the requested day has no slots, scan ahead so the agent can present
+      // next available dates without looping day by day.
+      if (availability.success && slots.length === 0) {
+        const nextDates = await queryNextAvailableDates({
+          serviceId: service.id,
+          branchId: branch.id,
+          fromDate: resolvedDate.date,
+          artistId: artist?.id ?? undefined,
+        });
+        return {
+          success: true,
+          data: {
+            slots: [],
+            artistResolved: artist ? { id: artist.id, name: artist.name } : null,
+            nextAvailableDates: nextDates.length > 0 ? nextDates : null,
+          },
+        };
+      }
+
       return {
         success: availability.success,
         data: availability.data ? {
-          slots: availability.data,
+          slots,
           artistResolved: artist ? { id: artist.id, name: artist.name } : null,
         } : undefined,
         error: availability.error,
       };
+    }
+    case 'fetch_booking': {
+      const bookingRef = String(safeArgs.bookingReference ?? '');
+      if (!bookingRef) {
+        return { success: false, error: 'booking_reference_required' };
+      }
+      const result = await fetchBooking({ bookingRef });
+      if (!result.success || !result.data) {
+        return { success: false, error: result.error ?? 'booking_not_found' };
+      }
+      return { success: true, data: result.data.booking };
     }
     case 'create_booking': {
       const service = await resolveServiceName(String(safeArgs.service ?? ''));
@@ -93,7 +155,11 @@ async function executeToolImpl(
       if (!service) {
         return { success: false, error: 'service_not_found' };
       }
-      const gate = await checkPreBookingRequirements(service.id, session.clientId);
+      const gate = await checkPreBookingRequirements(
+        service.id,
+        session.clientId,
+        buildGateContext(session),
+      );
       if (!gate.gateCleared) {
         return { success: false, error: 'gate_blocked', reason: gate.reason };
       }
@@ -124,7 +190,9 @@ async function executeToolImpl(
           branchId: branch.id,
           date: resolvedDate.date,
         });
-        const nextSlots = (anyAvailability.data ?? []).slice(0, 3).map((s) => s.startTime.slice(11, 16));
+        const nextSlots = (anyAvailability.data ?? [])
+          .slice(0, 3)
+          .map((s) => isoToSalonLocalTime(s.startTime));
         return {
           success: false,
           error: 'artist_unavailable_at_requested_time',
@@ -141,12 +209,14 @@ async function executeToolImpl(
         availability.data.find((slot) => {
           const timeArg = safeArgs.time;
           if (!timeArg) return true;
-          return slot.startTime.slice(11, 16) === String(timeArg);
+          return slotMatchesSalonLocalTime(slot.startTime, String(timeArg));
         }) ?? null;
 
       // Requested time doesn't match — suggest alternatives
       if (!matchingSlot) {
-        const nextSlots = availability.data.slice(0, 3).map((s) => s.startTime.slice(11, 16));
+        const nextSlots = availability.data
+          .slice(0, 3)
+          .map((s) => isoToSalonLocalTime(s.startTime));
         return {
           success: false,
           error: 'requested_time_unavailable',
@@ -173,6 +243,16 @@ async function executeToolImpl(
         };
       }
 
+      if (!session.clientId && visitorContact && !isValidContact(visitorContact)) {
+        return {
+          success: false,
+          error: 'invalid_contact',
+          message:
+            'The contact provided does not look like a valid phone number or email. Please ask the user to provide a real phone number (e.g. +971501234567) or email address.',
+        };
+      }
+
+      const screeningRef = getContextSnapshot(session).lastScreeningRef;
       const booking = await createBooking({
         clientId: session.clientId,
         visitorName: session.clientId ? undefined : visitorName,
@@ -182,6 +262,7 @@ async function executeToolImpl(
         slotId: matchingSlot.id,
         artistId: matchingSlot.artistId ?? requestedArtist?.id ?? undefined,
         notes: String(safeArgs.notes ?? ''),
+        screeningRef,
         channel: session.channel,
         bookingType: String(safeArgs.bookingType ?? 'single') as
           | 'single'
@@ -208,12 +289,13 @@ async function executeToolImpl(
       };
     }
     case 'modify_booking': {
+      console.log('modify_booking', session);
       const bookingRef = String(safeArgs.bookingReference ?? '');
       const service = await resolveServiceName(String(safeArgs.service ?? ''));
       if (!bookingRef) {
         return { success: false, error: 'booking_reference_required' };
       }
-      if (!session.clientId) {
+      if (session.userTier === 'client' && !session.clientId) {
         return { success: false, error: 'client_required' };
       }
       if (!service) {
@@ -241,7 +323,7 @@ async function executeToolImpl(
           if (!timeArg) {
             return true;
           }
-          return slot.startTime.slice(11, 16) === String(timeArg);
+          return slotMatchesSalonLocalTime(slot.startTime, String(timeArg));
         }) ?? availability.data[0];
       if (!matchingSlot) {
         return { success: false, error: 'no_slots_available' };
@@ -250,7 +332,7 @@ async function executeToolImpl(
       const result = await modifyBooking({
         bookingRef,
         newSlotId: matchingSlot.id,
-        clientId: session.clientId,
+        clientId: session.userTier === 'client' ? session.clientId : null,
       });
       return { success: result.success, data: result.data, error: result.error };
     }
@@ -259,10 +341,10 @@ async function executeToolImpl(
       if (!bookingRef) {
         return { success: false, error: 'booking_reference_required' };
       }
-      if (!session.clientId) {
+      if (session.userTier === 'client' && !session.clientId) {
         return { success: false, error: 'client_required' };
       }
-      const result = await cancelBooking({ bookingRef, clientId: session.clientId });
+      const result = await cancelBooking({ bookingRef, clientId: session.userTier === 'client' ? session.clientId : null });
       return { success: result.success, data: result.data, error: result.error };
     }
     case 'add_notes': {
@@ -305,6 +387,10 @@ async function executeToolImpl(
       const result = await listServices();
       return { success: result.success, data: result.data, error: result.error };
     }
+    case 'list_service_locations': {
+      const result = await listServiceLocations();
+      return { success: result.success, data: result.data, error: result.error };
+    }
     case 'book_consultation': {
       const service = await resolveServiceName(String(safeArgs.service ?? ''));
       const branch = await resolveBranchName(String(safeArgs.branch ?? ''));
@@ -318,6 +404,29 @@ async function executeToolImpl(
       if (!resolvedDate.ok) {
         return { success: false, error: resolvedDate.error };
       }
+
+      // Require visitor details for unauthenticated sessions
+      const consultSnapshot = getContextSnapshot(session);
+      const consultVisitorName =
+        (typeof safeArgs.visitorName === 'string' && safeArgs.visitorName.trim()) ||
+        consultSnapshot.visitorName;
+      const consultVisitorContact =
+        (typeof safeArgs.visitorContact === 'string' && safeArgs.visitorContact.trim()) ||
+        session.whatsappNumber ||
+        consultSnapshot.visitorContact;
+      if (!session.clientId && (!consultVisitorName || !consultVisitorContact)) {
+        return { success: false, error: 'visitor_details_required' };
+      }
+
+      if (!session.clientId && consultVisitorContact && !isValidContact(consultVisitorContact)) {
+        return {
+          success: false,
+          error: 'invalid_contact',
+          message:
+            'The contact provided does not look like a valid phone number or email. Please ask the user to provide a real phone number or email address.',
+        };
+      }
+
       const availability = await queryAvailability({
         serviceId: service.id,
         branchId: branch.id,
@@ -332,12 +441,19 @@ async function executeToolImpl(
       }
       const result = await createConsultation({
         clientId: session.clientId,
-        visitorContact: session.whatsappNumber ?? undefined,
+        visitorName: consultVisitorName ?? undefined,
+        visitorContact: consultVisitorContact ?? undefined,
         serviceId: service.id,
         serviceCategory: service.gateCategory,
         branchId: branch.id,
         slotId: slot.id,
       });
+      if (result.success) {
+        await persistAgentContext(session, {
+          ...(consultVisitorName ? { visitorName: consultVisitorName } : {}),
+          ...(consultVisitorContact ? { visitorContact: consultVisitorContact } : {}),
+        });
+      }
       return { success: result.success, data: result.data, error: result.error };
     }
     case 'check_clearance_status': {
@@ -420,12 +536,45 @@ async function executeToolImpl(
       if (!answers) {
         return { success: false, error: 'answers_required' };
       }
+      const screeningSnapshot = getContextSnapshot(session);
+      const visitorName =
+        (typeof safeArgs.visitorName === 'string' && safeArgs.visitorName.trim()) ||
+        screeningSnapshot.visitorName;
+      const visitorContact =
+        (typeof safeArgs.visitorContact === 'string' && safeArgs.visitorContact.trim()) ||
+        screeningSnapshot.visitorContact ||
+        session.whatsappNumber ||
+        undefined;
+
+      // Require identity for unauthenticated sessions — screening must be linkable
+      if (!session.clientId && (!visitorName || !visitorContact)) {
+        return { success: false, error: 'visitor_details_required' };
+      }
+
+      if (!session.clientId && visitorContact && !isValidContact(visitorContact)) {
+        return {
+          success: false,
+          error: 'invalid_contact',
+          message:
+            'The contact provided does not look like a valid phone number or email. Please ask the user to provide a real phone number or email address.',
+        };
+      }
+
       const result = await submitScreening({
         clientId: session.clientId,
-        visitorContact: session.whatsappNumber ?? undefined,
+        visitorName: visitorName ?? undefined,
+        visitorContact,
         serviceCategory: service.gateCategory,
         answers: answers as ScreeningAnswers,
       });
+      if (result.success && result.data?.screeningId) {
+        await persistAgentContext(session, {
+          lastScreeningRef: result.data.screeningId,
+          lastService: service.name,
+          ...(visitorName ? { visitorName } : {}),
+          ...(visitorContact ? { visitorContact } : {}),
+        });
+      }
       return { success: result.success, data: result.data, error: result.error };
     }
     case 'check_pre_booking_requirements': {
@@ -433,7 +582,11 @@ async function executeToolImpl(
       if (!service) {
         return { success: false, error: 'service_not_found' };
       }
-      const result = await checkPreBookingRequirements(service.id, session.clientId);
+      const result = await checkPreBookingRequirements(
+        service.id,
+        session.clientId,
+        buildGateContext(session),
+      );
       return {
         success: result.gateCleared,
         data: result,
@@ -520,6 +673,9 @@ export function createSessionTools(session: SessionContext) {
   const cancelBookingImpl = async ({ bookingReference }: { bookingReference: string }) =>
     executeToolImpl('cancel_booking', { bookingReference }, session);
 
+  const fetchBookingImpl = async ({ bookingReference }: { bookingReference: string }) =>
+    executeToolImpl('fetch_booking', { bookingReference }, session);
+
   const addNotesImpl = async ({
     bookingReference,
     notes,
@@ -550,15 +706,22 @@ export function createSessionTools(session: SessionContext) {
 
   const listServicesImpl = async () => executeToolImpl('list_services', {}, session);
 
+  const listServiceLocationsImpl = async () =>
+    executeToolImpl('list_service_locations', {}, session);
+
   const bookConsultationImpl = async ({
     service,
     branch,
     date,
+    visitorName,
+    visitorContact,
   }: {
     service: string;
     branch?: string;
     date?: string;
-  }) => executeToolImpl('book_consultation', { service, branch, date }, session);
+    visitorName?: string;
+    visitorContact?: string;
+  }) => executeToolImpl('book_consultation', { service, branch, date, visitorName, visitorContact }, session);
 
   const checkClearanceStatusImpl = async ({ service }: { service: string }) =>
     executeToolImpl('check_clearance_status', { service }, session);
@@ -596,10 +759,14 @@ export function createSessionTools(session: SessionContext) {
   const submitScreeningImpl = async ({
     service,
     answers,
+    visitorName,
+    visitorContact,
   }: {
     service: string;
     answers: Record<string, unknown>;
-  }) => executeToolImpl('submit_screening', { service, answers }, session);
+    visitorName?: string;
+    visitorContact?: string;
+  }) => executeToolImpl('submit_screening', { service, answers, visitorName, visitorContact }, session);
 
   const checkPreBookingRequirementsImpl = async ({ service }: { service: string }) =>
     executeToolImpl('check_pre_booking_requirements', { service }, session);
@@ -684,6 +851,14 @@ export function createSessionTools(session: SessionContext) {
     }),
   });
 
+  const fetchBookingTool = tool(fetchBookingImpl, {
+    name: 'fetch_booking',
+    description: 'Fetch a booking using a booking reference.',
+    schema: z.object({
+      bookingReference: z.string().describe('Booking reference to fetch'),
+    }),
+  });
+
   const addNotesTool = tool(addNotesImpl, {
     name: 'add_notes',
     description: 'Add notes, preferences, or health details to an existing booking.',
@@ -719,18 +894,27 @@ export function createSessionTools(session: SessionContext) {
   const listServicesTool = tool(listServicesImpl, {
     name: 'list_services',
     description:
-      'List all active treatments and services offered by the salon from the database.',
+      'List all active treatments and services offered by the salon from the database. Does not include branch locations — use list_service_locations when the user asks where services are offered.',
+    schema: z.object({}),
+  });
+
+  const listServiceLocationsTool = tool(listServiceLocationsImpl, {
+    name: 'list_service_locations',
+    description:
+      'Return every active service with the branches that offer it in a single call. Use this for catalog or location overview questions instead of calling list_branches_for_service repeatedly.',
     schema: z.object({}),
   });
 
   const bookConsultationTool = tool(bookConsultationImpl, {
     name: 'book_consultation',
     description:
-      'Book a consultation slot for a service that requires consultation or patch testing.',
+      'Book a consultation slot for a service that requires consultation or patch testing. For unauthenticated users, visitorName and visitorContact are required.',
     schema: z.object({
       service: z.string().describe('Treatment name'),
       branch: z.string().optional().describe('Branch or city name'),
       date: z.string().optional().describe('ISO date YYYY-MM-DD'),
+      visitorName: z.string().optional().describe('Full name — required for non-signed-in users'),
+      visitorContact: z.string().optional().describe('Phone number — required for non-signed-in users'),
     }),
   });
 
@@ -796,12 +980,45 @@ export function createSessionTools(session: SessionContext) {
   const submitScreeningTool = tool(submitScreeningImpl, {
     name: 'submit_screening',
     description:
-      'Submit a medical screening questionnaire for T3 services and return whether questions were flagged.',
+      'Submit a completed medical screening questionnaire for a T3 service. Call this once you have collected all six answers from the user. All answer fields are required booleans. For unauthenticated users, visitorName and visitorContact are required.',
     schema: z.object({
-      service: z.string().describe('Treatment name'),
-      answers: z
-        .record(z.unknown())
-        .describe('Screening questionnaire answers keyed by question field'),
+      service: z.string().describe('Treatment name, e.g. Profhilo'),
+      visitorName: z.string().optional().describe('Full name — required for non-signed-in users'),
+      visitorContact: z.string().optional().describe('Phone number — required for non-signed-in users'),
+      answers: z.object({
+        q1Pregnant: z
+          .boolean()
+          .describe('Are you pregnant or breastfeeding? true = yes, false = no'),
+        q2BloodThinners: z
+          .boolean()
+          .describe(
+            'Are you currently taking any blood-thinning medication (e.g. Aspirin, Warfarin)? true = yes, false = no',
+          ),
+        q3Allergies: z
+          .boolean()
+          .describe(
+            'Do you have any known allergies, particularly to hyaluronic acid or injectable products? true = yes, false = no',
+          ),
+        q4PriorProcedures: z
+          .boolean()
+          .describe(
+            'Have you had any prior injectable procedures or facial treatments? true = yes, false = no',
+          ),
+        q4Detail: z
+          .string()
+          .optional()
+          .describe('If q4PriorProcedures is true, brief description of prior procedures'),
+        q5ActiveInfection: z
+          .boolean()
+          .describe(
+            'Do you have any active skin infections, cold sores, or inflammation in the treatment area? true = yes, false = no',
+          ),
+        q6Autoimmune: z
+          .boolean()
+          .describe(
+            'Do you have an autoimmune disease or are you on immunosuppressant medication? true = yes, false = no',
+          ),
+      }).describe('Medical screening answers — all boolean fields are required'),
     }),
   });
 
@@ -825,6 +1042,7 @@ export function createSessionTools(session: SessionContext) {
     initiatePaymentTool,
     lookupFaqTool,
     listServicesTool,
+    listServiceLocationsTool,
     bookConsultationTool,
     checkClearanceStatusTool,
     checkFrequencyTool,
@@ -834,6 +1052,7 @@ export function createSessionTools(session: SessionContext) {
     resolveDepositRuleTool,
     submitScreeningTool,
     checkPreBookingRequirementsTool,
+    fetchBookingTool,
   ];
 
   const toolImplementations: Record<
@@ -848,11 +1067,13 @@ export function createSessionTools(session: SessionContext) {
     create_booking: (args) => createBookingImpl(args as Parameters<typeof createBookingImpl>[0]),
     modify_booking: (args) => modifyBookingImpl(args as Parameters<typeof modifyBookingImpl>[0]),
     cancel_booking: (args) => cancelBookingImpl(args as Parameters<typeof cancelBookingImpl>[0]),
+    fetch_booking: (args) => fetchBookingImpl(args as Parameters<typeof fetchBookingImpl>[0]),
     add_notes: (args) => addNotesImpl(args as Parameters<typeof addNotesImpl>[0]),
     initiate_payment: (args) =>
       initiatePaymentImpl(args as Parameters<typeof initiatePaymentImpl>[0]),
     lookup_faq: (args) => lookupFaqImpl(args as Parameters<typeof lookupFaqImpl>[0]),
     list_services: () => listServicesImpl(),
+    list_service_locations: () => listServiceLocationsImpl(),
     book_consultation: (args) =>
       bookConsultationImpl(args as Parameters<typeof bookConsultationImpl>[0]),
     check_clearance_status: (args) =>

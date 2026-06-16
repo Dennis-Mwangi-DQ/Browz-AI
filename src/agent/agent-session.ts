@@ -73,6 +73,21 @@ export function learnFromToolCalls(
         next.lastWaitlistRef = data.entry.id;
       }
     }
+    if (
+      (tr.name === 'create_booking' || tr.name === 'modify_booking') &&
+      tr.result &&
+      typeof tr.result === 'object'
+    ) {
+      const res = tr.result as { success?: boolean; data?: { bookingId?: string } };
+      if (res.success && res.data?.bookingId) {
+        const ref = res.data.bookingId;
+        next.lastBookingRef = ref;
+        const existingRefs = next.sessionBookingRefs ?? [];
+        if (!existingRefs.includes(ref)) {
+          next.sessionBookingRefs = [...existingRefs, ref];
+        }
+      }
+    }
   }
 
   next.recentTopics = mergeTopics(next.recentTopics, topics);
@@ -90,8 +105,13 @@ export function formatContextForPrompt(
   if (snapshot.lastBranch) {
     lines.push(`Branch in focus: ${snapshot.lastBranch}`);
   }
-  if (snapshot.lastBookingRef) {
-    lines.push(`Booking reference in focus: ${snapshot.lastBookingRef}`);
+  if (snapshot.lastBookingRef || (snapshot.sessionBookingRefs?.length ?? 0) > 0) {
+    const refs = snapshot.sessionBookingRefs ?? [];
+    if (refs.length >= 2) {
+      lines.push(`Bookings created this session: ${refs.join(', ')}`);
+    } else {
+      lines.push(`Booking reference in focus: ${snapshot.lastBookingRef ?? refs[0]}`);
+    }
   }
   if (snapshot.lastWaitlistRef) {
     lines.push(`Waitlist reference in focus: ${snapshot.lastWaitlistRef}`);

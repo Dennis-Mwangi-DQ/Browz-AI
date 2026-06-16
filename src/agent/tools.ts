@@ -16,6 +16,7 @@ import {
   resolveDepositRule as resolveNoShowDepositRule,
 } from '../tools/noShow';
 import { addNotes } from '../tools/notes';
+import { escalate } from '../escalation/escalationHandler';
 import { generatePaymentLink } from '../tools/payment';
 import { getContextSnapshot } from './agent-session';
 import { lookupFaq } from '../tools/faq';
@@ -274,13 +275,14 @@ async function executeToolImpl(
         return { success: false, error: booking.error ?? 'booking_failed' };
       }
 
-      const { bookingId, paymentRule } = booking.data;
+      const { bookingId, paymentRule, paymentLink } = booking.data;
 
       return {
         success: true,
         data: {
           bookingId,
           paymentRule,
+          paymentLink,
           service: service.name,
           branch: branch.name,
           artist: requestedArtist?.name ?? matchingSlot.artistId ?? null,
@@ -382,6 +384,21 @@ async function executeToolImpl(
       }
       const result = await lookupFaq({ query });
       return { success: result.success, data: result.data, error: result.error };
+    }
+    case 'escalate_human': {
+      const reason = String(safeArgs.reason ?? 'user_requested') as
+        | 'low_confidence'
+        | 'user_requested'
+        | 'tool_failure'
+        | 'out_of_scope'
+        | 'payment_failure';
+      await escalate({
+        sessionId: session.sessionId,
+        reason,
+        channel: session.channel,
+        lastMessage: String(safeArgs.lastMessage ?? ''),
+      });
+      return { success: true, data: { escalated: true } };
     }
     case 'list_services': {
       const result = await listServices();
@@ -704,6 +721,14 @@ export function createSessionTools(session: SessionContext) {
   const lookupFaqImpl = async ({ query }: { query: string }) =>
     executeToolImpl('lookup_faq', { query }, session);
 
+  const escalateHumanImpl = async ({
+    reason,
+    lastMessage,
+  }: {
+    reason?: string;
+    lastMessage?: string;
+  }) => executeToolImpl('escalate_human', { reason, lastMessage }, session);
+
   const listServicesImpl = async () => executeToolImpl('list_services', {}, session);
 
   const listServiceLocationsImpl = async () =>
@@ -891,6 +916,19 @@ export function createSessionTools(session: SessionContext) {
     }),
   });
 
+  const escalateHumanTool = tool(escalateHumanImpl, {
+    name: 'escalate_human',
+    description:
+      'Connect the user with reception or staff. Use when the user asks to speak to a person, or when a flagged client wants help understanding full upfront payment requirements.',
+    schema: z.object({
+      reason: z
+        .string()
+        .optional()
+        .describe('Escalation reason: user_requested, payment_failure, tool_failure, out_of_scope, or low_confidence'),
+      lastMessage: z.string().optional().describe('The user message that triggered escalation'),
+    }),
+  });
+
   const listServicesTool = tool(listServicesImpl, {
     name: 'list_services',
     description:
@@ -1041,6 +1079,7 @@ export function createSessionTools(session: SessionContext) {
     addNotesTool,
     initiatePaymentTool,
     lookupFaqTool,
+    escalateHumanTool,
     listServicesTool,
     listServiceLocationsTool,
     bookConsultationTool,
@@ -1072,6 +1111,8 @@ export function createSessionTools(session: SessionContext) {
     initiate_payment: (args) =>
       initiatePaymentImpl(args as Parameters<typeof initiatePaymentImpl>[0]),
     lookup_faq: (args) => lookupFaqImpl(args as Parameters<typeof lookupFaqImpl>[0]),
+    escalate_human: (args) =>
+      escalateHumanImpl(args as Parameters<typeof escalateHumanImpl>[0]),
     list_services: () => listServicesImpl(),
     list_service_locations: () => listServiceLocationsImpl(),
     book_consultation: (args) =>

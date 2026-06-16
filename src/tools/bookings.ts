@@ -109,7 +109,7 @@ export async function createBooking(params: {
   clearanceRef?: string;
   channel: 'web' | 'whatsapp';
   bookingType?: 'single' | 'consultation' | 'package_first_session';
-}): Promise<ToolResult<{ bookingId: string; paymentRule: PaymentRule }>> {
+}): Promise<ToolResult<{ bookingId: string; paymentRule: PaymentRule; paymentLink?: string }>> {
   const parsed = CreateBookingParams.safeParse(params);
   if (!parsed.success) {
     return fail('invalid_create_booking_params');
@@ -168,6 +168,7 @@ export async function createBooking(params: {
 
       await supabase.from('time_slots').update({ status: 'booked' }).eq('id', params.slotId);
 
+      let paymentLinkUrl: string | undefined;
       if (requiresPayment) {
         const paymentLink = await generatePaymentLink({
           bookingRef: bookingId,
@@ -179,7 +180,10 @@ export async function createBooking(params: {
         if (!paymentLink.success) {
           return fail(paymentLink.error ?? 'payment_link_failed');
         }
+        paymentLinkUrl = paymentLink.data?.paymentLink;
       }
+
+      return ok({ bookingId, paymentRule, paymentLink: paymentLinkUrl });
     }
 
     return ok({ bookingId, paymentRule });

@@ -14,6 +14,7 @@ import { getEnv } from '../lib/env';
 import { createAgentLlm, isAgentLlmEnabled } from '../lib/llmClient';
 import { addDays, startOfTodayUtc, toIsoDate } from '../lib/dates';
 import { appendTurn, getOrCreateSession, resolveUserIdentity, updateSession } from '../memory/sessionManager';
+import { escalate } from '../escalation/escalationHandler';
 import { getClientNoShowFlag, handleReconfirmationReply } from '../tools/noShow';
 import type { SessionContext } from '../types';
 
@@ -48,7 +49,7 @@ Your job is to help users book appointments, check availability, and answer salo
 **General rules:**
 15. ALWAYS call tools to get real booking, availability, and salon information — never make up services, prices, or policies.
 16. For questions about which services are offered, call list_services before answering. When the user asks where services are available, which branch offers what, or wants a service catalog with locations, call list_service_locations once — never call list_branches_for_service in a loop across multiple services.
-17. For pricing, location, hours, or policy questions, call lookup_faq.
+17. For pricing, location, hours, or policy questions, call lookup_faq. For deposit rules or cancellation/forfeiture policy, use queries like "deposit policy" or "cancellation policy". To calculate the exact deposit for a service before booking, call resolve_deposit_rule.
 18. If the user names a treatment, pass the treatment name in tool args; tools resolve service IDs internally.
 19. Before create_booking for T2 or T3 services, call check_pre_booking_requirements first. If the gate is cleared, proceed to create_booking directly. If the gate requires consultation or patch test (not medical screening), explain the next step and offer to book a consultation.
 
@@ -88,24 +89,31 @@ Your job is to help users book appointments, check availability, and answer salo
 26. Before executing a cancellation, call lookup_faq with topic "cancellation_policy" and present the relevant policy to the user (e.g. cancellation window, any applicable fees). Ask the user to explicitly confirm they still want to cancel after seeing the policy. Only call cancel_booking after the user confirms.
 
 **Payment:**
-27. Call initiate_payment only in the following scenarios:
-    a. After a successful create_booking where the service or client tier requires upfront payment or a deposit (check_pre_booking_requirements will indicate this).
-    b. When the user explicitly requests to pay for an existing booking — require bookingReference, verify identity via rules 21–22, then call initiate_payment.
-    After initiate_payment succeeds, present the payment confirmation reference and tell the user to save it alongside their booking reference. If initiate_payment fails, tell the user in plain language and do not retry automatically.
+27. After a successful create_booking, use the returned paymentRule and paymentLink:
+    a. paymentType 'free': confirm the booking with no payment link.
+    b. paymentType 'deposit': state the deposit percent (paymentRule.depositPercent), deposit amount in AED, balance due at the branch, and present the paymentLink. The link is valid for 24 hours.
+    c. paymentType 'full_upfront' or 'package': state the total amount in AED and present the paymentLink. The link is valid for 24 hours.
+    d. If paymentRule.reason is 'no_show_flag', frame full upfront payment as the current policy for their account — never mention no-show flags, penalties, or missed appointments.
+    e. When any deposit or upfront payment is required, always include: "Please note: your deposit is refundable if you cancel more than 24 hours before your appointment. Cancellations within 24 hours or no-shows will forfeit the deposit."
+28. Call initiate_payment only if create_booking returned no paymentLink, or when the user explicitly requests to pay for an existing booking — require bookingReference, verify identity via rules 21–22, then call initiate_payment. After initiate_payment succeeds, present the payment link and tell the user to save it alongside their booking reference. If initiate_payment fails, explain in plain language and call escalate_human with reason payment_failure.
 
 **Dates and formatting:**
-28. Never invent or guess dates. Only pass dates the user stated or relative terms you converted using the date context provided in the session.
-29. Format appointment times in Gulf Standard Time (UAE, UTC+4) using 12-hour clock (e.g. "8:00 AM"). After a successful booking, always show the booking reference prominently and tell the guest to save it — they will need the reference plus their name and contact to cancel or reschedule.
+29. Never invent or guess dates. Only pass dates the user stated or relative terms you converted using the date context provided in the session.
+30. Format appointment times in Gulf Standard Time (UAE, UTC+4) using 12-hour clock (e.g. "8:00 AM"). After a successful booking, always show the booking reference prominently and tell the guest to save it — they will need the reference plus their name and contact to cancel or reschedule.
+
+**No-show and reconfirmation:**
+31. Short YES/NO replies to appointment reminders are handled automatically. For explicit confirmations with a booking reference, use confirm_appointment.
+32. If a client asks why full upfront payment is required and wants to speak with reception, call escalate_human with reason user_requested.
 
 **Errors:**
-30. If a tool returns the same error more than once, STOP immediately. Do not retry the same tool with different argument variations. Tell the user: I'm having trouble completing this action. Please try again later or contact us directly." and end the turn.
+33. If a tool returns the same error more than once, STOP immediately. Do not retry the same tool with different argument variations. Tell the user: I'm having trouble completing this action. Please try again later or contact us directly." and end the turn.
 
 **Response formatting:**
-31. Do not use emojis or decorative symbols in any response.
-32. Use clean Markdown that renders well in chat: short paragraphs, simple bullets, and simple tables only when they make comparison easier.
-33. Do not use icon-prefixed headings; write plain headings like "Medical Screening Required" and "Availability".
-34. Avoid horizontal rules, oversized heading stacks, and dense tables for short lists. Prefer bullets for 2–6 options.
-35. End with one clear next step or question.`;
+34. Do not use emojis or decorative symbols in any response.
+35. Use clean Markdown that renders well in chat: short paragraphs, simple bullets, and simple tables only when they make comparison easier.
+36. Do not use icon-prefixed headings; write plain headings like "Medical Screening Required" and "Availability".
+37. Avoid horizontal rules, oversized heading stacks, and dense tables for short lists. Prefer bullets for 2–6 options.
+38. End with one clear next step or question.`;
 
 function buildDateContext(): string {
   const today = startOfTodayUtc();
@@ -263,33 +271,76 @@ export async function runAgent(params: {
   }
 
   const lowerMessage = params.message.toLowerCase();
+  const trimmedMessage = params.message.trim().toLowerCase();
   const asksWhyFullPayment =
     lowerMessage.includes('why') &&
     (lowerMessage.includes('full payment') ||
       lowerMessage.includes('full upfront') ||
       lowerMessage.includes('pay upfront'));
-  if (asksWhyFullPayment && activeSession.clientId) {
+  const lastAgentTurn = [...activeSession.conversationHistory]
+    .reverse()
+    .find((turn) => turn.role === 'agent');
+  const offeredReception = lastAgentTurn?.content.includes('connect you with reception');
+  const acceptsReception =
+    offeredReception &&
+    /^(yes|yeah|yep|please|ok|okay|sure|connect me|speak to reception)\b/.test(trimmedMessage);
+  const requestsHuman =
+    /\b(speak to (a |someone|reception)|talk to (a |someone|reception)|connect me|human|reception)\b/.test(
+      lowerMessage,
+    );
+
+  if (activeSession.clientId && (asksWhyFullPayment || acceptsReception || requestsHuman)) {
     const flag = await getClientNoShowFlag(activeSession.clientId);
     if (flag?.status === 'active') {
-      const response =
-        'Full upfront payment is currently required for your account. If you have questions about this, our team can help - would you like me to connect you with reception?';
-      await appendTurn(activeSession.sessionId, {
-        role: 'user',
-        content: params.message,
-        timestamp: new Date().toISOString(),
-      });
-      await appendTurn(activeSession.sessionId, {
-        role: 'agent',
-        content: response,
-        timestamp: new Date().toISOString(),
-      });
+      if (acceptsReception || (requestsHuman && !asksWhyFullPayment)) {
+        await escalate({
+          sessionId: activeSession.sessionId,
+          reason: 'user_requested',
+          channel: activeSession.channel,
+          lastMessage: params.message,
+        });
+        const response =
+          'I have connected you with reception. A team member will follow up with you shortly.';
+        await appendTurn(activeSession.sessionId, {
+          role: 'user',
+          content: params.message,
+          timestamp: new Date().toISOString(),
+        });
+        await appendTurn(activeSession.sessionId, {
+          role: 'agent',
+          content: response,
+          timestamp: new Date().toISOString(),
+        });
 
-      return {
-        response,
-        sessionId: activeSession.sessionId,
-        toolCalls: [],
-        toolResults: [],
-      };
+        return {
+          response,
+          sessionId: activeSession.sessionId,
+          toolCalls: [{ name: 'escalate_human', args: { reason: 'user_requested' } }],
+          toolResults: [{ name: 'escalate_human', result: { success: true, data: { escalated: true } } }],
+        };
+      }
+
+      if (asksWhyFullPayment) {
+        const response =
+          'Full upfront payment is currently required for your account. If you have questions about this, our team can help - would you like me to connect you with reception?';
+        await appendTurn(activeSession.sessionId, {
+          role: 'user',
+          content: params.message,
+          timestamp: new Date().toISOString(),
+        });
+        await appendTurn(activeSession.sessionId, {
+          role: 'agent',
+          content: response,
+          timestamp: new Date().toISOString(),
+        });
+
+        return {
+          response,
+          sessionId: activeSession.sessionId,
+          toolCalls: [],
+          toolResults: [],
+        };
+      }
     }
   }
 

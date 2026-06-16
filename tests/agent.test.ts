@@ -5,7 +5,10 @@ import { toIsoDate } from '../src/lib/dates';
 const {
   appendTurnMock,
   createAgentLlmMock,
+  escalateMock,
+  getClientNoShowFlagMock,
   getOrCreateSessionMock,
+  handleReconfirmationReplyMock,
   invokeMock,
   isAgentLlmEnabledMock,
   lookupFaqMock,
@@ -14,7 +17,10 @@ const {
 } = vi.hoisted(() => ({
   appendTurnMock: vi.fn(),
   createAgentLlmMock: vi.fn(),
+  escalateMock: vi.fn(),
+  getClientNoShowFlagMock: vi.fn(),
   getOrCreateSessionMock: vi.fn(),
+  handleReconfirmationReplyMock: vi.fn(),
   invokeMock: vi.fn(),
   isAgentLlmEnabledMock: vi.fn(() => true),
   lookupFaqMock: vi.fn(),
@@ -38,6 +44,15 @@ vi.mock('../src/memory/sessionManager', () => ({
   updateSession: updateSessionMock,
 }));
 
+vi.mock('../src/escalation/escalationHandler', () => ({
+  escalate: escalateMock,
+}));
+
+vi.mock('../src/tools/noShow', () => ({
+  getClientNoShowFlag: getClientNoShowFlagMock,
+  handleReconfirmationReply: handleReconfirmationReplyMock,
+}));
+
 import { runAgent } from '../src/agent/agent';
 
 describe('runAgent', () => {
@@ -59,13 +74,20 @@ describe('runAgent', () => {
   beforeEach(() => {
     appendTurnMock.mockReset();
     createAgentLlmMock.mockReset();
+    escalateMock.mockReset();
+    getClientNoShowFlagMock.mockReset();
     getOrCreateSessionMock.mockReset();
+    handleReconfirmationReplyMock.mockReset();
     invokeMock.mockReset();
     isAgentLlmEnabledMock.mockReset();
     isAgentLlmEnabledMock.mockReturnValue(true);
     lookupFaqMock.mockReset();
     resolveUserIdentityMock.mockReset();
     updateSessionMock.mockReset();
+
+    handleReconfirmationReplyMock.mockResolvedValue({ handled: false });
+    getClientNoShowFlagMock.mockResolvedValue(null);
+    escalateMock.mockResolvedValue(undefined);
 
     resolveUserIdentityMock.mockResolvedValue({
       userTier: 'visitor',
@@ -225,6 +247,73 @@ describe('runAgent', () => {
 
     expect(result.response).toContain('LLM is not configured');
     expect(result.toolCalls).toEqual([]);
+    expect(createAgentLlmMock).not.toHaveBeenCalled();
+  });
+
+  it('explains full upfront policy when a flagged client asks why', async () => {
+    const flaggedSession = {
+      ...baseSession,
+      clientId: '22222222-2222-4222-8222-222222222222',
+      userTier: 'client' as const,
+    };
+    getOrCreateSessionMock.mockResolvedValue(flaggedSession);
+    updateSessionMock.mockResolvedValue(flaggedSession);
+    getClientNoShowFlagMock.mockResolvedValue({
+      status: 'active',
+      noShowCount: 2,
+    });
+
+    const result = await runAgent({
+      message: 'Why is full payment required?',
+      sessionId: flaggedSession.sessionId,
+      channel: 'web',
+      clientId: flaggedSession.clientId,
+    });
+
+    expect(result.response).toContain('Full upfront payment is currently required');
+    expect(result.response).toContain('connect you with reception');
+    expect(escalateMock).not.toHaveBeenCalled();
+    expect(createAgentLlmMock).not.toHaveBeenCalled();
+  });
+
+  it('escalates when a flagged client accepts reception help', async () => {
+    const flaggedSession = {
+      ...baseSession,
+      clientId: '22222222-2222-4222-8222-222222222222',
+      userTier: 'client' as const,
+      conversationHistory: [
+        {
+          role: 'agent' as const,
+          content:
+            'Full upfront payment is currently required for your account. If you have questions about this, our team can help - would you like me to connect you with reception?',
+          timestamp: '2026-06-05T11:48:00.000Z',
+        },
+      ],
+    };
+    getOrCreateSessionMock.mockResolvedValue(flaggedSession);
+    updateSessionMock.mockResolvedValue(flaggedSession);
+    getClientNoShowFlagMock.mockResolvedValue({
+      status: 'active',
+      noShowCount: 2,
+    });
+
+    const result = await runAgent({
+      message: 'Yes please',
+      sessionId: flaggedSession.sessionId,
+      channel: 'web',
+      clientId: flaggedSession.clientId,
+    });
+
+    expect(escalateMock).toHaveBeenCalledWith({
+      sessionId: flaggedSession.sessionId,
+      reason: 'user_requested',
+      channel: 'web',
+      lastMessage: 'Yes please',
+    });
+    expect(result.response).toContain('connected you with reception');
+    expect(result.toolCalls).toEqual([
+      { name: 'escalate_human', args: { reason: 'user_requested' } },
+    ]);
     expect(createAgentLlmMock).not.toHaveBeenCalled();
   });
 });

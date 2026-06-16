@@ -14,7 +14,7 @@ export type HealthStatus = {
     error?: string;
   };
   embeddings: {
-    provider: 'openai' | 'openrouter' | 'ollama' | 'none';
+    provider: 'openai' | 'openrouter' | 'deepseek' | 'ollama' | 'none';
     model: string | null;
   };
 };
@@ -39,6 +39,20 @@ function getConfiguredChatModel(): string {
 
 function getEmbeddingProvider(): HealthStatus['embeddings'] {
   const env = getEnv();
+
+  if (env.EMBEDDING_PROVIDER !== 'auto') {
+    switch (env.EMBEDDING_PROVIDER) {
+      case 'openai':
+        return { provider: 'openai', model: 'text-embedding-3-small' };
+      case 'openrouter':
+        return { provider: 'openrouter', model: 'text-embedding-3-small' };
+      case 'deepseek':
+        return { provider: 'deepseek', model: env.DEEPSEEK_EMBEDDING_MODEL };
+      case 'ollama':
+        return { provider: 'ollama', model: env.OLLAMA_EMBEDDING_MODEL };
+    }
+  }
+
   if (env.OPENAI_API_KEY) {
     return { provider: 'openai', model: 'text-embedding-3-small' };
   }

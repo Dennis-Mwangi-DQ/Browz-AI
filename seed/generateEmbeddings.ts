@@ -1,40 +1,6 @@
 import 'dotenv/config';
-import { getEnv } from '../src/lib/env';
+import { generateEmbedding } from '../src/lib/embeddings';
 import { requireSeedClient } from './shared';
-
-async function getEmbedding(text: string): Promise<number[]> {
-  const apiKey = getEnv('OPENAI_API_KEY');
-  if (!apiKey) {
-    throw new Error('OPENAI_API_KEY is required to generate FAQ embeddings.');
-  }
-
-  const response = await fetch('https://api.openai.com/v1/embeddings', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'text-embedding-3-small',
-      input: text,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Embedding request failed with ${response.status}: ${await response.text()}`);
-  }
-
-  const payload = (await response.json()) as {
-    data?: Array<{ embedding?: number[] }>;
-  };
-
-  const embedding = payload.data?.[0]?.embedding;
-  if (!embedding) {
-    throw new Error('Embedding response did not include a vector.');
-  }
-
-  return embedding;
-}
 
 async function main() {
   const supabase = requireSeedClient();
@@ -56,7 +22,7 @@ async function main() {
 
   for (const faq of faqs) {
     const text = `${faq.question}\n${faq.answer}`;
-    const embedding = await getEmbedding(text);
+    const embedding = await generateEmbedding(text);
 
     const { error: updateError } = await supabase
       .from('faqs')

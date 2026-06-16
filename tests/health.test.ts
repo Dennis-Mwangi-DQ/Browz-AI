@@ -75,5 +75,9 @@ describe('getHealthStatus', () => {
       enabled: true,
     });
     expect(health.ollama).toBeUndefined();
+    expect(health.embeddings).toEqual({
+      provider: 'ollama',
+      model: 'nomic-embed-text',
+    });
   });
 });

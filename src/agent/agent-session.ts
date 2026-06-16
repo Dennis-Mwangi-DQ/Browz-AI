@@ -14,6 +14,7 @@ export function getContextSnapshot(session: SessionContext): AgentContextSnapsho
 export function learnFromToolCalls(
   snapshot: AgentContextSnapshot,
   toolCalls: { name: string; args: Record<string, unknown> }[],
+  toolResults?: { name: string; result: unknown }[],
 ): AgentContextSnapshot {
   const next: AgentContextSnapshot = { ...snapshot };
   const topics: string[] = [];
@@ -31,6 +32,9 @@ export function learnFromToolCalls(
     if (typeof args.bookingReference === 'string') {
       next.lastBookingRef = args.bookingReference;
     }
+    if (typeof args.waitlistRef === 'string') {
+      next.lastWaitlistRef = args.waitlistRef;
+    }
     if (typeof args.visitorName === 'string' && args.visitorName.trim()) {
       next.visitorName = args.visitorName.trim();
     }
@@ -45,6 +49,29 @@ export function learnFromToolCalls(
     }
     if (tc.name === 'list_services') {
       topics.push('services');
+    }
+    if (
+      tc.name === 'add_to_waitlist' ||
+      tc.name === 'check_waitlist_status' ||
+      tc.name === 'confirm_slot_offer' ||
+      tc.name === 'decline_slot_offer'
+    ) {
+      topics.push('waitlist');
+    }
+  }
+
+  for (const tr of toolResults ?? []) {
+    if (tr.name === 'add_to_waitlist' && tr.result && typeof tr.result === 'object') {
+      const data = (tr.result as { data?: { waitlistRef?: string } }).data;
+      if (data?.waitlistRef) {
+        next.lastWaitlistRef = data.waitlistRef;
+      }
+    }
+    if (tr.name === 'check_waitlist_status' && tr.result && typeof tr.result === 'object') {
+      const data = (tr.result as { data?: { entry?: { id?: string } } }).data;
+      if (data?.entry?.id) {
+        next.lastWaitlistRef = data.entry.id;
+      }
     }
   }
 
@@ -65,6 +92,9 @@ export function formatContextForPrompt(
   }
   if (snapshot.lastBookingRef) {
     lines.push(`Booking reference in focus: ${snapshot.lastBookingRef}`);
+  }
+  if (snapshot.lastWaitlistRef) {
+    lines.push(`Waitlist reference in focus: ${snapshot.lastWaitlistRef}`);
   }
   if (snapshot.lastScreeningRef) {
     lines.push(`Medical screening submitted: ${snapshot.lastScreeningRef}`);

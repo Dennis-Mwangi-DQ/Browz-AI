@@ -44,3 +44,11 @@ export async function processNoShows(params: {
 
   return ok({ processed: rows.length });
 }
+
+export function startNoShowsJob(): void {
+  const intervalMs = 5 * 60 * 1000;
+  void processNoShows();
+  setInterval(() => {
+    void processNoShows();
+  }, intervalMs);
+}

@@ -20,6 +20,16 @@ function salonTimeParts(isoTime: string): { hour: string; minute: string } {
   };
 }
 
+/** Convert an ISO instant to salon-local YYYY-MM-DD (Asia/Dubai). */
+export function isoToSalonLocalDate(isoTime: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: SALON_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(isoTime));
+}
+
 /** Convert an ISO instant to salon-local HH:MM (Asia/Dubai). */
 export function isoToSalonLocalTime(isoTime: string): string {
   const { hour, minute } = salonTimeParts(isoTime);

@@ -1,4 +1,4 @@
-import { AIMessage } from '@langchain/core/messages';
+import { AIMessage, AIMessageChunk } from '@langchain/core/messages';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { toIsoDate } from '../src/lib/dates';
 
@@ -13,6 +13,7 @@ const {
   isAgentLlmEnabledMock,
   lookupFaqMock,
   resolveUserIdentityMock,
+  streamMock,
   updateSessionMock,
 } = vi.hoisted(() => ({
   appendTurnMock: vi.fn(),
@@ -25,6 +26,7 @@ const {
   isAgentLlmEnabledMock: vi.fn(() => true),
   lookupFaqMock: vi.fn(),
   resolveUserIdentityMock: vi.fn(),
+  streamMock: vi.fn(),
   updateSessionMock: vi.fn(),
 }));
 
@@ -53,7 +55,7 @@ vi.mock('../src/tools/noShow', () => ({
   handleReconfirmationReply: handleReconfirmationReplyMock,
 }));
 
-import { runAgent } from '../src/agent/agent';
+import { runAgent, runAgentStream } from '../src/agent/agent';
 
 describe('runAgent', () => {
   const baseSession = {
@@ -100,6 +102,7 @@ describe('runAgent', () => {
     createAgentLlmMock.mockReturnValue({
       bindTools: vi.fn(() => ({
         invoke: invokeMock,
+        stream: streamMock,
       })),
     });
   });
@@ -316,4 +319,38 @@ describe('runAgent', () => {
     ]);
     expect(createAgentLlmMock).not.toHaveBeenCalled();
   });
-});
+
+  it('streams the final model response as token events', async () => {
+      async function* fakeStream() {
+        yield new AIMessageChunk({ content: 'Welcome to ' });
+        yield new AIMessageChunk({ content: 'Browz.' });
+      }
+
+      streamMock.mockResolvedValueOnce(fakeStream());
+
+      const events: Array<{ type: string; text?: string; result?: { response: string; }; }> = [];
+      const result = await runAgentStream(
+        {
+          message: 'Hello there',
+          sessionId: baseSession.sessionId,
+          channel: 'web',
+        },
+        (event) => {
+          if (event.type === 'token') {
+            events.push({ type: event.type, text: event.text });
+          } else if (event.type === 'done') {
+            events.push({ type: event.type, result: event.result });
+          }
+        },
+      );
+
+      expect(events).toEqual([
+        { type: 'token', text: 'Welcome to ' },
+        { type: 'token', text: 'Browz.' },
+        { type: 'done', result: expect.objectContaining({ response: 'Welcome to Browz.' }) },
+      ]);
+      expect(result.response).toBe('Welcome to Browz.');
+      expect(streamMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock).not.toHaveBeenCalled();
+    });
+  });

@@ -306,7 +306,7 @@ CREATE TABLE faqs (
   question text NOT NULL,
   answer text NOT NULL,
   category text,
-  embedding vector(1536),
+  embedding vector(768),
   created_at timestamptz DEFAULT now()
 );
 
@@ -328,7 +328,7 @@ CREATE TABLE products (
 );
 
 CREATE OR REPLACE FUNCTION match_faqs (
-  query_embedding vector(1536),
+  query_embedding vector(768),
   match_threshold float DEFAULT 0.72,
   match_count int DEFAULT 3
 )

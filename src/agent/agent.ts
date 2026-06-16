@@ -1,5 +1,6 @@
 import {
   AIMessage,
+  AIMessageChunk,
   HumanMessage,
   SystemMessage,
   ToolMessage,
@@ -13,10 +14,11 @@ import { createSessionTools } from './tools';
 import { getEnv } from '../lib/env';
 import { createAgentLlm, isAgentLlmEnabled } from '../lib/llmClient';
 import { addDays, startOfTodayUtc, toIsoDate } from '../lib/dates';
+import { getPendingOffer } from '../lib/pendingOffers';
 import { appendTurn, getOrCreateSession, resolveUserIdentity, updateSession } from '../memory/sessionManager';
 import { escalate } from '../escalation/escalationHandler';
 import { getClientNoShowFlag, handleReconfirmationReply } from '../tools/noShow';
-import type { SessionContext } from '../types';
+import type { PendingSlotOffer, SessionContext } from '../types';
 
 const SYSTEM_PROMPT = `You are a Browz booking concierge assistant for a beauty salon in the UAE.
 
@@ -109,11 +111,19 @@ Your job is to help users book appointments, check availability, and answer salo
 33. If a tool returns the same error more than once, STOP immediately. Do not retry the same tool with different argument variations. Tell the user: I'm having trouble completing this action. Please try again later or contact us directly." and end the turn.
 
 **Response formatting:**
-34. Do not use emojis or decorative symbols in any response.
-35. Use clean Markdown that renders well in chat: short paragraphs, simple bullets, and simple tables only when they make comparison easier.
-36. Do not use icon-prefixed headings; write plain headings like "Medical Screening Required" and "Availability".
-37. Avoid horizontal rules, oversized heading stacks, and dense tables for short lists. Prefer bullets for 2–6 options.
-38. End with one clear next step or question.`;
+31. Do not use emojis or decorative symbols in any response.
+32. Use clean Markdown that renders well in chat: short paragraphs, simple bullets, and simple tables only when they make comparison easier.
+33. Do not use icon-prefixed headings; write plain headings like "Medical Screening Required" and "Availability".
+34. Avoid horizontal rules, oversized heading stacks, and dense tables for short lists. Prefer bullets for 2–6 options.
+35. End with one clear next step or question.
+
+**Waitlist:**
+36. When a user asks to join a waitlist, collect service, branch, preferred date or date range, time preference (if any), preferred artist (if any), and contact details if not already in session.
+37. Ask for missing waitlist fields one at a time — never dump all questions at once.
+38. When confirming a waitlist entry, always state service, branch, preferred date, time window, and the 15-minute response window rule.
+39. When a user responds to a slot offer, confirm the slot details before calling confirm_slot_offer.
+40. If gate check fails on waitlist offer confirmation, explain the requirement (consultation or patch test) clearly and offer the next step. Do not re-offer the slot — it may have been released.
+41. Never tell a user their position number in the waitlist queue, even if check_waitlist_status returns one.`;
 
 function buildDateContext(): string {
   const today = startOfTodayUtc();
@@ -196,6 +206,119 @@ function sanitizeAssistantResponse(text: string): string {
     .trim();
 }
 
+const TOOL_STATUS_MESSAGES: Record<string, string> = {
+  search_availability: 'Checking availability…',
+  list_services: 'Looking up services…',
+  list_service_locations: 'Finding service locations…',
+  list_branches_for_service: 'Finding branches…',
+  list_artists_for_service_at_branch: 'Finding specialists…',
+  create_booking: 'Creating your booking…',
+  modify_booking: 'Updating your booking…',
+  cancel_booking: 'Cancelling your booking…',
+  fetch_booking: 'Looking up your booking…',
+  lookup_faq: 'Checking salon information…',
+  check_pre_booking_requirements: 'Checking booking requirements…',
+  submit_screening: 'Saving screening answers…',
+  book_consultation: 'Booking your consultation…',
+  initiate_payment: 'Starting payment…',
+};
+
+function toolStatusMessage(toolName: string): string {
+  return TOOL_STATUS_MESSAGES[toolName] ?? 'Working on your request…';
+}
+
+export type AgentRunParams = {
+  message: string;
+  sessionId?: string;
+  channel: 'web' | 'whatsapp';
+  authToken?: string;
+  whatsappNumber?: string;
+  clientId?: string;
+  visitorName?: string;
+  visitorContact?: string;
+};
+
+export type AgentRunResult = {
+  response: string;
+  sessionId: string;
+  toolCalls: { name: string; args: Record<string, unknown> }[];
+  toolResults: { name: string; result: unknown }[];
+};
+
+export type AgentStreamEvent =
+  | { type: 'status'; message: string }
+  | { type: 'token'; text: string }
+  | { type: 'done'; result: AgentRunResult };
+
+type LlmWithTools = {
+  invoke: (
+    input: Array<SystemMessage | HumanMessage | AIMessage | ToolMessage>,
+  ) => Promise<AIMessage>;
+  stream?: (
+    input: Array<SystemMessage | HumanMessage | AIMessage | ToolMessage>,
+  ) => Promise<AsyncIterable<AIMessageChunk>>;
+};
+
+async function invokeLlmTurn(
+  llmWithTools: LlmWithTools,
+  messages: Array<SystemMessage | HumanMessage | AIMessage | ToolMessage>,
+  onToken?: (text: string) => void,
+): Promise<AIMessage> {
+  if (!onToken || !llmWithTools.stream) {
+    return llmWithTools.invoke(messages);
+  }
+
+  const stream = await llmWithTools.stream(messages);
+  let gathered: AIMessageChunk | undefined;
+
+  for await (const chunk of stream) {
+    gathered = gathered ? gathered.concat(chunk) : chunk;
+    if (!gathered.tool_calls?.length) {
+      const delta = extractResponseText(chunk.content);
+      if (delta) onToken(delta);
+    }
+  }
+
+  if (!gathered) {
+    return new AIMessage({ content: '' });
+  }
+
+  return new AIMessage({
+    content: gathered.content,
+    tool_calls: gathered.tool_calls,
+  });
+}
+
+async function persistAgentTurn(params: {
+  sessionId: string;
+  userMessage: string;
+  responseText: string;
+  activeSession: SessionContext;
+  executedToolCalls: { name: string; args: Record<string, unknown> }[];
+}): Promise<void> {
+  await appendTurn(params.sessionId, {
+    role: 'user',
+    content: params.userMessage,
+    timestamp: new Date().toISOString(),
+  });
+  await appendTurn(params.sessionId, {
+    role: 'agent',
+    content: params.responseText,
+    timestamp: new Date().toISOString(),
+  });
+
+  const nextSnapshot = learnFromToolCalls(
+    getContextSnapshot(params.activeSession),
+    params.executedToolCalls,
+  );
+  await updateSession(params.sessionId, {
+    agentContext: nextSnapshot,
+    ...(nextSnapshot.lastBookingRef
+      ? { lastBookingRef: nextSnapshot.lastBookingRef }
+      : {}),
+  });
+}
+
 export async function runAgent(params: {
   message: string;
   sessionId?: string;
@@ -210,6 +333,7 @@ export async function runAgent(params: {
   sessionId: string;
   toolCalls: { name: string; args: Record<string, unknown> }[];
   toolResults: { name: string; result: unknown }[];
+  pendingOffer?: PendingSlotOffer | null;
 }> {
   if (!isAgentLlmEnabled()) {
     return {
@@ -387,6 +511,7 @@ export async function runAgent(params: {
       const nextSnapshot = learnFromToolCalls(
         getContextSnapshot(activeSession),
         executedToolCalls,
+        executedToolResults,
       );
       await updateSession(activeSession.sessionId, {
         agentContext: nextSnapshot,
@@ -395,11 +520,18 @@ export async function runAgent(params: {
           : {}),
       });
 
+      const snapshot = getContextSnapshot(activeSession);
+      const pendingOffer = getPendingOffer({
+        contact: params.visitorContact ?? snapshot.visitorContact ?? params.whatsappNumber,
+        clientId: resolvedClientId,
+      });
+
       return {
         response: responseText,
         sessionId: activeSession.sessionId,
         toolCalls: executedToolCalls,
         toolResults: executedToolResults,
+        pendingOffer,
       };
     }
 
@@ -461,6 +593,7 @@ export async function runAgent(params: {
   const nextSnapshot = learnFromToolCalls(
     getContextSnapshot(activeSession),
     executedToolCalls,
+    executedToolResults,
   );
   await updateSession(activeSession.sessionId, {
     agentContext: nextSnapshot,
@@ -469,10 +602,162 @@ export async function runAgent(params: {
       : {}),
   });
 
+  const snapshot = getContextSnapshot(activeSession);
+  const pendingOffer = getPendingOffer({
+    contact: params.visitorContact ?? snapshot.visitorContact ?? params.whatsappNumber,
+    clientId: resolvedClientId,
+  });
+
   return {
     response: fallback,
     sessionId: activeSession.sessionId,
     toolCalls: executedToolCalls,
     toolResults: executedToolResults,
+    pendingOffer,
   };
+}
+
+export async function runAgentStream(
+  params: AgentRunParams,
+  emit: (event: AgentStreamEvent) => void,
+): Promise<AgentRunResult> {
+  if (!isAgentLlmEnabled()) {
+    const result: AgentRunResult = {
+      response:
+        'LLM is not configured. Set LLM_PROVIDER and the required credentials for that provider, then try again.',
+      sessionId: params.sessionId ?? 'unknown',
+      toolCalls: [],
+      toolResults: [],
+    };
+    emit({ type: 'token', text: result.response });
+    emit({ type: 'done', result });
+    return result;
+  }
+
+  const identity = await resolveUserIdentity(params.authToken, params.whatsappNumber);
+  const resolvedClientId = params.clientId ?? identity.clientId;
+  const session = await getOrCreateSession(
+    params.sessionId,
+    params.channel,
+    resolvedClientId,
+    params.whatsappNumber ?? null,
+  );
+  const priorContext = getContextSnapshot(session);
+  const nextContext = {
+    ...priorContext,
+    ...(params.visitorName?.trim() ? { visitorName: params.visitorName.trim() } : {}),
+    ...(params.visitorContact?.trim()
+      ? { visitorContact: params.visitorContact.trim() }
+      : {}),
+  };
+  const enrichedSession = await updateSession(session.sessionId, {
+    clientId: resolvedClientId,
+    userTier: resolvedClientId ? 'client' : identity.userTier,
+    whatsappNumber: params.whatsappNumber ?? session.whatsappNumber,
+    agentContext: nextContext,
+  });
+
+  const activeSession = enrichedSession ?? session;
+  const { allTools, toolImplementations } = createSessionTools(activeSession);
+  const llm = createAgentLlm();
+  if (!llm.bindTools) {
+    throw new Error('Configured LLM does not support tool calling.');
+  }
+  const llmWithTools = llm.bindTools(allTools) as LlmWithTools;
+  const messages = buildConversationMessages(activeSession, params.message);
+  const executedToolCalls: { name: string; args: Record<string, unknown> }[] = [];
+  const executedToolResults: { name: string; result: unknown }[] = [];
+  const maxIterations = getEnv().AGENT_MAX_TOOL_ITERATIONS;
+
+  for (let i = 0; i < maxIterations; i += 1) {
+    const response = await invokeLlmTurn(llmWithTools, messages, (text) => {
+      emit({ type: 'token', text });
+    });
+    messages.push(response);
+
+    const toolCalls = response.tool_calls;
+    if (!toolCalls || toolCalls.length === 0) {
+      const responseText = sanitizeAssistantResponse(extractResponseText(response.content));
+
+      await persistAgentTurn({
+        sessionId: activeSession.sessionId,
+        userMessage: params.message,
+        responseText,
+        activeSession,
+        executedToolCalls,
+      });
+
+      const result: AgentRunResult = {
+        response: responseText,
+        sessionId: activeSession.sessionId,
+        toolCalls: executedToolCalls,
+        toolResults: executedToolResults,
+      };
+      emit({ type: 'done', result });
+      return result;
+    }
+
+    for (const tc of toolCalls) {
+      emit({ type: 'status', message: toolStatusMessage(tc.name) });
+      executedToolCalls.push({
+        name: tc.name,
+        args: tc.args as Record<string, unknown>,
+      });
+
+      try {
+        const impl = toolImplementations[tc.name];
+        if (!impl) {
+          const errResult = { error: `Unknown tool: ${tc.name}` };
+          executedToolResults.push({ name: tc.name, result: errResult });
+          messages.push(
+            new ToolMessage({
+              content: JSON.stringify(errResult),
+              tool_call_id: tc.id ?? '',
+            }),
+          );
+          continue;
+        }
+
+        const result = await impl(tc.args as Record<string, unknown>);
+        executedToolResults.push({ name: tc.name, result });
+        messages.push(
+          new ToolMessage({
+            content: typeof result === 'string' ? result : JSON.stringify(result),
+            tool_call_id: tc.id ?? '',
+          }),
+        );
+      } catch (err) {
+        const errResult = { error: err instanceof Error ? err.message : 'Unknown error' };
+        executedToolResults.push({ name: tc.name, result: errResult });
+        messages.push(
+          new ToolMessage({
+            content: JSON.stringify(errResult),
+            tool_call_id: tc.id ?? '',
+          }),
+        );
+      }
+    }
+  }
+
+  const fallback =
+    "I've reached the maximum number of tool calls while trying to answer your question. Please try rephrasing or asking a more specific question.";
+
+  emit({ type: 'token', text: fallback });
+
+  await persistAgentTurn({
+    sessionId: activeSession.sessionId,
+    userMessage: params.message,
+    responseText: fallback,
+    activeSession,
+    executedToolCalls,
+  });
+
+  const result: AgentRunResult = {
+    response: fallback,
+    sessionId: activeSession.sessionId,
+    toolCalls: executedToolCalls,
+    toolResults: executedToolResults,
+  };
+  emit({ type: 'done', result });
+  return result;
 }

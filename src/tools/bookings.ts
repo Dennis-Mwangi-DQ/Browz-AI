@@ -286,7 +286,7 @@ const { data: booking } = await supabase
         return fail('booking_not_found');
       }
 
-      return ok({ booking});
+      return ok({ booking: booking as unknown as BookingRecord });
     }
 
     return fail('booking_not_found');

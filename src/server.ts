@@ -57,6 +57,7 @@ app.get('/', (_req, res) => {
     endpoints: {
       health: 'GET /health',
       chat: 'POST /chat',
+      chatStream: 'POST /chat/stream',
       whatsapp: 'POST /whatsapp',
       bookingCancelled: 'POST /events/booking-cancelled',
       services: 'GET /data/services',

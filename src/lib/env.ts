@@ -34,10 +34,14 @@ const envSchema = z.object({
   OLLAMA_MODEL: z.string().default('qwen2.5:7b'),
   OLLAMA_EMBEDDING_MODEL: z.string().default('nomic-embed-text'),
   OLLAMA_API_KEY: z.string().optional(),
+  EMBEDDING_PROVIDER: z
+    .enum(['auto', 'openai', 'openrouter', 'deepseek', 'ollama'])
+    .default('auto'),
   OPENAI_MODEL: z.string().default('gpt-4o'),
   ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-20250514'),
   DEEPSEEK_API_KEY: z.string().optional(),
   DEEPSEEK_MODEL: z.string().default('deepseek-v4-flash'),
+  DEEPSEEK_EMBEDDING_MODEL: z.string().default('deepseek-embedding-v2'),
   DEEPSEEK_BASE_URL: z
     .string()
     .url()

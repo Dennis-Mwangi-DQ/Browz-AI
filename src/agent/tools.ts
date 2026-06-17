@@ -401,6 +401,30 @@ async function executeToolImpl(
       return { success: result.success, data: result.data, error: result.error };
     }
     case 'escalate_human': {
+      const snapshot = getContextSnapshot(session);
+      const visitorName =
+        (typeof safeArgs.visitorName === 'string' && safeArgs.visitorName.trim()) ||
+        snapshot.visitorName;
+      const visitorContact =
+        (typeof safeArgs.visitorContact === 'string' && safeArgs.visitorContact.trim()) ||
+        session.whatsappNumber ||
+        snapshot.visitorContact;
+      if (!session.clientId && (!visitorName || !visitorContact)) {
+        return {
+          success: false,
+          error: 'visitor_details_required',
+          message:
+            'Before connecting with the team, please collect the visitor full name and a valid phone number or email.',
+        };
+      }
+      if (!session.clientId && visitorContact && !isValidContact(visitorContact)) {
+        return {
+          success: false,
+          error: 'invalid_contact',
+          message:
+            'The contact provided does not look like a valid phone number or email. Please ask for a real phone number (e.g. +971501234567) or email.',
+        };
+      }
       const reason = String(safeArgs.reason ?? 'user_requested') as
         | 'low_confidence'
         | 'user_requested'
@@ -412,6 +436,9 @@ async function executeToolImpl(
         reason,
         channel: session.channel,
         lastMessage: String(safeArgs.lastMessage ?? ''),
+        clientId: session.clientId,
+        visitorName: session.clientId ? null : visitorName ?? null,
+        visitorContact: session.clientId ? null : visitorContact ?? null,
       });
       return { success: true, data: { escalated: true } };
     }
@@ -847,10 +874,14 @@ export function createSessionTools(session: SessionContext) {
   const escalateHumanImpl = async ({
     reason,
     lastMessage,
+    visitorName,
+    visitorContact,
   }: {
     reason?: string;
     lastMessage?: string;
-  }) => executeToolImpl('escalate_human', { reason, lastMessage }, session);
+    visitorName?: string;
+    visitorContact?: string;
+  }) => executeToolImpl('escalate_human', { reason, lastMessage, visitorName, visitorContact }, session);
 
   const listServicesImpl = async () => executeToolImpl('list_services', {}, session);
 
@@ -1115,6 +1146,14 @@ export function createSessionTools(session: SessionContext) {
         .optional()
         .describe('Escalation reason: user_requested, payment_failure, tool_failure, out_of_scope, or low_confidence'),
       lastMessage: z.string().optional().describe('The user message that triggered escalation'),
+      visitorName: z
+        .string()
+        .optional()
+        .describe('Visitor full name (required for visitor handoff if not already known)'),
+      visitorContact: z
+        .string()
+        .optional()
+        .describe('Visitor phone/email (required for visitor handoff if not already known)'),
     }),
   });
 

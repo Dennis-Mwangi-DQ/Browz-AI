@@ -6,6 +6,9 @@ export async function escalate(params: {
   reason: 'low_confidence' | 'user_requested' | 'tool_failure' | 'out_of_scope' | 'payment_failure';
   channel: 'web' | 'whatsapp';
   lastMessage: string;
+  clientId?: string | null;
+  visitorName?: string | null;
+  visitorContact?: string | null;
 }): Promise<void> {
   const webhookUrl = getEnv('ESCALATION_WEBHOOK_URL');
 

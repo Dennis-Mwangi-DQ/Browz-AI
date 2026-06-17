@@ -144,7 +144,7 @@ export async function createBooking(params: {
   bookingType?: 'single' | 'consultation' | 'package_first_session';
   bookingSource?: BookingSource;
   waitlistRef?: string;
-}): Promise<ToolResult<{ bookingId: string; paymentRule: PaymentRule }>> {
+}): Promise<ToolResult<{ bookingId: string; paymentRule: PaymentRule; paymentLink?: string }>> {
   const parsed = CreateBookingParams.safeParse(params);
   if (!parsed.success) {
     return fail('invalid_create_booking_params');

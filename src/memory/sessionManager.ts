@@ -234,7 +234,7 @@ export async function getOrCreateSession(
 }
 
 export async function updateSession(sessionId: string, updates: Partial<SessionContext>): Promise<SessionContext | null> {
-  let existing = sessionStore.get(sessionId);
+  let existing: SessionContext | null | undefined = sessionStore.get(sessionId);
   if (!existing) {
     existing = await loadSessionById(sessionId);
     if (existing) {

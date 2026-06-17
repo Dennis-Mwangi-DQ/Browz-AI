@@ -10,6 +10,20 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+async function persistSession(session: SessionContext): Promise<void> {
+  if (!supabase) {
+    return;
+  }
+
+  const { error } = await supabase.from('sessions').upsert(toDbSession(session));
+  if (error) {
+    console.error('[sessionManager] Failed to persist session', {
+      sessionId: session.sessionId,
+      error: error.message,
+    });
+  }
+}
+
 function toSessionContext(row: Record<string, unknown>): SessionContext {
   return {
     sessionId: String(row.id),
@@ -47,13 +61,18 @@ function toDbSession(session: SessionContext): Record<string, unknown> {
   };
 }
 
-function createSession(channel: SessionContext['channel'], sessionId?: string, clientId?: string | null, whatsappNumber?: string | null): SessionContext {
+function createSession(
+  channel: SessionContext['channel'],
+  sessionId?: string,
+  clientId?: string | null,
+  whatsappNumber?: string | null,
+): SessionContext {
   const timestamp = nowIso();
 
   return {
     sessionId: sessionId ?? generateSessionId(),
     channel,
-    userTier: 'visitor',
+    userTier: clientId ? 'client' : 'visitor',
     clientId: clientId ?? null,
     whatsappNumber: whatsappNumber ?? null,
     conversationHistory: [],
@@ -84,6 +103,97 @@ function decodeJwtSubject(authToken?: string): string | null {
   }
 }
 
+async function loadSessionById(sessionId: string): Promise<SessionContext | null> {
+  if (!supabase) {
+    return null;
+  }
+
+  const { data, error } = await supabase.from('sessions').select('*').eq('id', sessionId).maybeSingle();
+  if (error || !data) {
+    return null;
+  }
+
+  return toSessionContext(data);
+}
+
+export async function getSessionById(sessionId: string): Promise<SessionContext | null> {
+  const cached = sessionStore.get(sessionId);
+  if (cached) {
+    return cached;
+  }
+
+  const persisted = await loadSessionById(sessionId);
+  if (persisted) {
+    sessionStore.set(persisted.sessionId, persisted);
+  }
+  return persisted;
+}
+
+export async function getLatestActiveSession(
+  channel: SessionContext['channel'],
+  clientId: string,
+): Promise<SessionContext | null> {
+  const persisted = await loadLatestSessionByClient(channel, clientId);
+  if (persisted) {
+    sessionStore.set(persisted.sessionId, persisted);
+  }
+  return persisted;
+}
+
+async function loadLatestSessionByWhatsApp(
+  channel: SessionContext['channel'],
+  whatsappNumber?: string | null,
+): Promise<SessionContext | null> {
+  if (!supabase || !whatsappNumber) {
+    return null;
+  }
+
+  const normalizedPhone = normalizePhoneNumber(whatsappNumber);
+  const candidates = [...new Set([whatsappNumber, normalizedPhone].filter((value): value is string => Boolean(value)))];
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from('sessions')
+    .select('*')
+    .eq('channel', channel)
+    .eq('status', 'active')
+    .in('whatsapp_number', candidates)
+    .order('updated_at', { ascending: false })
+    .limit(1);
+
+  if (error || !data?.[0]) {
+    return null;
+  }
+
+  return toSessionContext(data[0]);
+}
+
+async function loadLatestSessionByClient(
+  channel: SessionContext['channel'],
+  clientId?: string | null,
+): Promise<SessionContext | null> {
+  if (!supabase || !clientId) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from('sessions')
+    .select('*')
+    .eq('channel', channel)
+    .eq('client_id', clientId)
+    .eq('status', 'active')
+    .order('updated_at', { ascending: false })
+    .limit(1);
+
+  if (error || !data?.[0]) {
+    return null;
+  }
+
+  return toSessionContext(data[0]);
+}
+
 export async function getOrCreateSession(
   sessionId: string | undefined,
   channel: SessionContext['channel'],
@@ -96,27 +206,41 @@ export async function getOrCreateSession(
     return existing;
   }
 
-  if (supabase) {
-    const { data, error } = await supabase.from('sessions').select('*').eq('id', resolvedId).maybeSingle();
-    if (!error && data) {
-      const session = toSessionContext(data);
-      sessionStore.set(session.sessionId, session);
-      return session;
+  const persistedById = await loadSessionById(resolvedId);
+  if (persistedById) {
+    sessionStore.set(persistedById.sessionId, persistedById);
+    return persistedById;
+  }
+
+  if (!sessionId) {
+    const persistedByWhatsApp = await loadLatestSessionByWhatsApp(channel, whatsappNumber);
+    if (persistedByWhatsApp) {
+      sessionStore.set(persistedByWhatsApp.sessionId, persistedByWhatsApp);
+      return persistedByWhatsApp;
+    }
+
+    const persistedByClient = await loadLatestSessionByClient(channel, clientId);
+    if (persistedByClient) {
+      sessionStore.set(persistedByClient.sessionId, persistedByClient);
+      return persistedByClient;
     }
   }
 
   const session = createSession(channel, resolvedId, clientId, whatsappNumber);
   sessionStore.set(session.sessionId, session);
-
-  if (supabase) {
-    void supabase.from('sessions').upsert(toDbSession(session));
-  }
+  await persistSession(session);
 
   return session;
 }
 
 export async function updateSession(sessionId: string, updates: Partial<SessionContext>): Promise<SessionContext | null> {
-  const existing = sessionStore.get(sessionId);
+  let existing = sessionStore.get(sessionId);
+  if (!existing) {
+    existing = await loadSessionById(sessionId);
+    if (existing) {
+      sessionStore.set(sessionId, existing);
+    }
+  }
   if (!existing) {
     return null;
   }
@@ -128,18 +252,18 @@ export async function updateSession(sessionId: string, updates: Partial<SessionC
   };
 
   sessionStore.set(sessionId, next);
-
-  if (supabase) {
-    void supabase.from('sessions').upsert(toDbSession(next));
-  }
+  await persistSession(next);
 
   return next;
 }
 
 export async function appendTurn(sessionId: string, turn: ConversationTurn): Promise<void> {
-  const session = sessionStore.get(sessionId);
+  const session = sessionStore.get(sessionId) ?? (await loadSessionById(sessionId));
   if (!session) {
     return;
+  }
+  if (!sessionStore.has(sessionId)) {
+    sessionStore.set(sessionId, session);
   }
 
   await updateSession(sessionId, {

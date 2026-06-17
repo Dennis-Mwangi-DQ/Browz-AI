@@ -1,10 +1,30 @@
 import { type Request, type Response, Router } from 'express';
+import { z } from 'zod';
 import { runAgent, runAgentStream, type AgentStreamEvent } from '../agent/agent';
+import { getLatestActiveSession, getSessionById } from '../memory/sessionManager';
 import { ChatRequest } from '../types';
 import { generateSessionId } from '../lib/ids';
 import { endSseResponse, initSseResponse, writeSseEvent } from '../lib/sse';
 
 export const chatRouter = Router();
+
+const sessionIdParam = z.string().uuid();
+const latestSessionQuery = z.object({
+  clientId: z.string().uuid(),
+  channel: z.enum(['web', 'whatsapp']).default('web'),
+});
+
+function toSessionHistoryResponse(session: NonNullable<Awaited<ReturnType<typeof getSessionById>>>) {
+  return {
+    sessionId: session.sessionId,
+    channel: session.channel,
+    status: session.status,
+    lastIntent: session.lastIntent,
+    lastBookingRef: session.lastBookingRef,
+    conversationHistory: session.conversationHistory,
+    agentContext: session.agentContext ?? null,
+  };
+}
 
 function writeAgentStreamEvent(res: Response, event: AgentStreamEvent): void {
   switch (event.type) {
@@ -83,3 +103,44 @@ async function handleChatStream(req: Request, res: Response) {
 
 chatRouter.post('/', handleChat);
 chatRouter.post('/stream', handleChatStream);
+
+chatRouter.get('/session/latest', async (req, res) => {
+  const parsed = latestSessionQuery.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: 'Invalid query',
+      details: parsed.error.flatten(),
+    });
+  }
+
+  try {
+    const session = await getLatestActiveSession(parsed.data.channel, parsed.data.clientId);
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    return res.json(toSessionHistoryResponse(session));
+  } catch (error) {
+    console.error('GET /chat/session/latest failed', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+chatRouter.get('/session/:sessionId', async (req, res) => {
+  const parsed = sessionIdParam.safeParse(req.params.sessionId);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Invalid session id' });
+  }
+
+  try {
+    const session = await getSessionById(parsed.data);
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    return res.json(toSessionHistoryResponse(session));
+  } catch (error) {
+    console.error('GET /chat/session/:sessionId failed', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});

@@ -870,6 +870,14 @@ export function createSessionTools(session: SessionContext) {
     visitorName?: string;
     visitorContact?: string;
   }) => executeToolImpl('book_consultation', { service, branch, date, visitorName, visitorContact }, session);
+  const fetchConsultationImpl = async ({ consultationReference }: { consultationReference: string }) =>
+    executeToolImpl('fetch_consultation', { consultationReference }, session);
+  const cancelConsultationImpl = async ({ consultationReference }: { consultationReference: string }) =>
+    executeToolImpl('cancel_consultation', { consultationReference }, session);
+  const modifyConsultationImpl = async ({ consultationReference, newSlotId }: { consultationReference: string; newSlotId: string }) =>
+    executeToolImpl('modify_consultation', { consultationReference, newSlotId }, session);
+  const fetchTimeSlotImpl = async ({ slotId }: { slotId: string }) =>
+    executeToolImpl('fetch_time_slot', { slotId }, session);
 
   const checkClearanceStatusImpl = async ({ service }: { service: string }) =>
     executeToolImpl('check_clearance_status', { service }, session);
@@ -1137,6 +1145,39 @@ export function createSessionTools(session: SessionContext) {
     }),
   });
 
+  const fetchConsultationTool = tool(fetchConsultationImpl, {
+    name: 'fetch_consultation',
+    description: 'Fetch a consultation using a consultation reference.',
+    schema: z.object({
+      consultationReference: z.string().describe('Consultation reference to fetch'),
+    }),
+  });
+
+  const cancelConsultationTool = tool(cancelConsultationImpl, {
+    name: 'cancel_consultation',
+    description: 'Cancel a consultation using a consultation reference.',
+    schema: z.object({
+      consultationReference: z.string().describe('Consultation reference to cancel'),
+    }),
+  });
+
+  const modifyConsultationTool = tool(modifyConsultationImpl, {
+    name: 'modify_consultation',
+    description: 'Modify a consultation to a new available slot.',
+    schema: z.object({
+      consultationReference: z.string().describe('Consultation reference'),
+      newSlotId: z.string().describe('New slot ID'),
+    }),
+  });
+
+  const fetchTimeSlotTool = tool(fetchTimeSlotImpl, {
+    name: 'fetch_time_slot',
+    description: 'Fetch a time slot using a slot ID.',
+    schema: z.object({
+      slotId: z.string().describe('Slot ID to fetch'),
+    }),
+  });
+
   const checkClearanceStatusTool = tool(checkClearanceStatusImpl, {
     name: 'check_clearance_status',
     description:
@@ -1316,6 +1357,9 @@ export function createSessionTools(session: SessionContext) {
     listServicesTool,
     listServiceLocationsTool,
     bookConsultationTool,
+    fetchConsultationTool,
+    cancelConsultationTool,
+    modifyConsultationTool,
     checkClearanceStatusTool,
     checkFrequencyTool,
     confirmAppointmentTool,

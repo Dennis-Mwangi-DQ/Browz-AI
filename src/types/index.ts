@@ -348,6 +348,22 @@ export interface BookingRecord {
   updatedAt: string;
 }
 
+export interface ConsultationRecord {
+  id: string;
+  clientId: string | null;
+  visitorName?: string;
+  visitorContact?: string;
+  serviceId: string;
+  serviceCategory: string;
+  branchId: string;
+  slotId: string;
+  status: string;
+  patchTestDone: boolean;
+  patchTestCleared: boolean;
+  clearanceValidUntil: string | null;
+  createdAt: string;
+}
+
 export const ChatRequest = z.object({
   message: z.string().min(1),
   sessionId: z.string().uuid().optional(),
@@ -357,6 +373,17 @@ export const ChatRequest = z.object({
   visitorContact: z.string().optional(),
 });
 export type ChatRequest = z.infer<typeof ChatRequest>;
+
+export const SessionHistoryResponse = z.object({
+  sessionId: z.string().uuid(),
+  channel: Channel,
+  status: z.enum(['active', 'escalated', 'closed']),
+  lastIntent: IntentId.nullable(),
+  lastBookingRef: z.string().nullable(),
+  conversationHistory: z.array(ConversationTurn),
+  agentContext: AgentContextSnapshotSchema.nullable(),
+});
+export type SessionHistoryResponse = z.infer<typeof SessionHistoryResponse>;
 
 export const WhatsAppWebhookBody = z.object({
   Body: z.string(),

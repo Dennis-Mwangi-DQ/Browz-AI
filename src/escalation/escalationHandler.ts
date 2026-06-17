@@ -1,5 +1,5 @@
 import { getEnv } from '../lib/env';
-import { supabase } from '../db/supabaseClient';
+import { updateSession } from '../memory/sessionManager';
 
 export async function escalate(params: {
   sessionId: string;
@@ -23,10 +23,5 @@ export async function escalate(params: {
     console.error('Escalation webhook failed', error);
   }
 
-  if (supabase) {
-    await supabase
-      .from('sessions')
-      .update({ status: 'escalated', updated_at: new Date().toISOString() })
-      .eq('id', params.sessionId);
-  }
+  await updateSession(params.sessionId, { status: 'escalated' });
 }

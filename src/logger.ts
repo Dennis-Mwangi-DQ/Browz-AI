@@ -22,7 +22,7 @@ export async function logTurn(entry: AgentLogEntry): Promise<void> {
     return;
   }
 
-  void supabase.from('agent_logs').insert({
+  const { error } = await supabase.from('agent_logs').insert({
     session_id: entry.sessionId,
     turn: entry.turn,
     channel: entry.channel,
@@ -36,4 +36,12 @@ export async function logTurn(entry: AgentLogEntry): Promise<void> {
     latency_ms: Math.round(entry.latencyMs),
     escalated: entry.escalated,
   });
+
+  if (error) {
+    console.error('[agent-log] Failed to persist turn', {
+      sessionId: entry.sessionId,
+      turn: entry.turn,
+      error: error.message,
+    });
+  }
 }

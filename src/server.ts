@@ -64,6 +64,8 @@ app.get('/', (_req, res) => {
       health: 'GET /health',
       chat: 'POST /chat',
       chatStream: 'POST /chat/stream',
+      session: 'GET /chat/session/:sessionId',
+      sessionLatest: 'GET /chat/session/latest?clientId=',
       whatsapp: 'POST /whatsapp',
       paymentComplete: 'POST /payments/complete',
       staffCheckIn: 'PATCH /bookings/:id/check-in',
